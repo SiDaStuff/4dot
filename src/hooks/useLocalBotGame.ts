@@ -33,6 +33,7 @@ export function useLocalBotGame(gameId: string | undefined) {
   const [moveLoading, setMoveLoading] = useState(false);
   const pollRef = useRef<number | null>(null);
   const botPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const gameRef = useRef<Game | null>(null);
 
   useEffect(() => {
     if (!gameId) { setGame(null); setLoading(false); return; }
@@ -42,9 +43,10 @@ export function useLocalBotGame(gameId: string | undefined) {
       try {
         const data = await api.get(`/api/bot/game/${gameId}`);
         setGame(data);
+        gameRef.current = data;
         setLoading(false);
         if (data.status === 'active' && data.currentTurn === 'black') {
-          botPollRef.current = setTimeout(fetchGame, 800);
+          botPollRef.current = setTimeout(fetchGame, 500);
         }
       } catch {
         setLoading(false);
@@ -53,12 +55,13 @@ export function useLocalBotGame(gameId: string | undefined) {
 
     fetchGame();
     pollRef.current = window.setInterval(async () => {
-      if (!gameId) return;
+      if (!gameId || gameRef.current?.status === 'finished') return;
       try {
         const data = await api.get(`/api/bot/game/${gameId}`);
         setGame(data);
+        gameRef.current = data;
       } catch {}
-    }, 2000);
+    }, 3000);
 
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);

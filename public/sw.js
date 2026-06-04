@@ -28,6 +28,7 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
   if (event.request.method !== 'GET') return;
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
 
   if (NEVER_CACHE.some(path => url.pathname.startsWith(path))) return;
 
@@ -80,6 +81,7 @@ self.addEventListener('fetch', (event) => {
           if (event.request.destination === 'document') {
             return caches.match('/index.html');
           }
+          return new Response('', { status: 504, statusText: 'Offline' });
         });
       })
     );
@@ -87,7 +89,10 @@ self.addEventListener('fetch', (event) => {
   }
 
   event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request))
+    fetch(event.request).catch(async () => {
+      const cached = await caches.match(event.request);
+      return cached || new Response('', { status: 504, statusText: 'Offline' });
+    })
   );
 });
 

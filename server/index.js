@@ -125,9 +125,10 @@ app.use(compression({
 }));
 app.use(express.json());
 
-const publicLimiter = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests', retryAfter: 60 } });
-const authLimiter = rateLimit({ windowMs: 60 * 1000, max: 300, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests', retryAfter: 60 } });
-const moveLimiter = rateLimit({ windowMs: 60 * 1000, max: 600, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests', retryAfter: 60 } });
+const rateLimitDefaults = { standardHeaders: true, legacyHeaders: false, validate: { trustProxy: false } };
+const publicLimiter = rateLimit({ ...rateLimitDefaults, windowMs: 60 * 1000, max: 120, message: { error: 'Too many requests', retryAfter: 60 } });
+const authLimiter = rateLimit({ ...rateLimitDefaults, windowMs: 60 * 1000, max: 300, message: { error: 'Too many requests', retryAfter: 60 } });
+const moveLimiter = rateLimit({ ...rateLimitDefaults, windowMs: 60 * 1000, max: 600, message: { error: 'Too many requests', retryAfter: 60 } });
 
 app.use('/api/leaderboard', publicLimiter);
 app.use('/api/leaderboard', (req, res, next) => { res.set('Cache-Control', 'public, max-age=30'); next(); });
@@ -703,6 +704,8 @@ async function finalizeGame(game, gameId, state, clock, move, gameResult) {
     else whiteUpdate.draws = (whiteData.draws || 0) + 1;
 
     await Promise.all([db.ref(`users/${game.blackPlayer.uid}`).update(blackUpdate), db.ref(`users/${game.whitePlayer.uid}`).update(whiteUpdate)]);
+    cache.delete(`profile_${game.blackPlayer.uid}`);
+    cache.delete(`profile_${game.whitePlayer.uid}`);
   }
 
   const finishedAt = Date.now();
@@ -810,6 +813,18 @@ const botGameStore = new Map();
 const clockTimers = new Map();
 const duelCooldowns = new Map();
 
+const cache = new Map();
+function cachedGet(key, ttlMs, fetcher) {
+  const entry = cache.get(key);
+  if (entry && Date.now() - entry.ts < ttlMs) return entry.data;
+  const result = fetcher();
+  if (result && typeof result.then === 'function') {
+    return result.then(data => { cache.set(key, { data, ts: Date.now() }); return data; });
+  }
+  cache.set(key, { data: result, ts: Date.now() });
+  return result;
+}
+
 app.get('/api/events', (req, res) => {
   const uid = req.user.uid;
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
@@ -845,6 +860,34 @@ function sendSSE(uid, data) {
   if (guestClients) guestClients.forEach(res => { try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch {} });
 }
 function broadcastToGame(game, data) { sendSSE(game.blackPlayer.uid, data); sendSSE(game.whitePlayer.uid, data); }
+
+async function createGameFromRematch(oldGame, requesterUid) {
+  const opponentUid = oldGame.blackPlayer.uid === requesterUid ? oldGame.whitePlayer.uid : oldGame.blackPlayer.uid;
+  const opponentData = await rtdbGet(`users/${opponentUid}`);
+  if (!opponentData) throw new Error('Opponent not found');
+  const userData = await rtdbGet(`users/${requesterUid}`);
+  if (!userData) throw new Error('User not found');
+
+  const fromColor = oldGame.blackPlayer.uid === requesterUid ? 'black' : 'white';
+  const newBlackUid = fromColor === 'white' ? opponentUid : requesterUid;
+  const newWhiteUid = fromColor === 'white' ? requesterUid : opponentUid;
+  const newBlackData = newBlackUid === requesterUid ? userData : opponentData;
+  const newWhiteData = newWhiteUid === requesterUid ? userData : opponentData;
+  const initialState = createInitialGameState();
+  const gameId = `${Date.now()}_${newBlackUid.slice(0, 6)}_${newWhiteUid.slice(0, 6)}`;
+  const gameData = {
+    id: gameId,
+    blackPlayer: { uid: newBlackUid, username: newBlackData.username || 'Player', rating: newBlackData.rating || 1500, ratingDeviation: newBlackData.ratingDeviation || 350, piecesPlaced: 0 },
+    whitePlayer: { uid: newWhiteUid, username: newWhiteData.username || 'Player', rating: newWhiteData.rating || 1500, ratingDeviation: newWhiteData.ratingDeviation || 350, piecesPlaced: 0 },
+    board: initialState.board, currentTurn: initialState.currentTurn, phase: initialState.phase,
+    mode: oldGame.mode || 'casual', moves: [], status: 'active',
+    clock: { black: DEFAULT_TIME_MS, white: DEFAULT_TIME_MS },
+    lastMoveTimestamp: Date.now(), createdAt: Date.now(), spectators: 0, positionHistory: [],
+  };
+  await db.ref(`activeGames/${gameId}`).set(encodeGameForStorage(gameData));
+  startClockTimer(gameId);
+  return { gameId, opponentUid };
+}
 
 async function findActiveGameForUser(uid) {
   if (!uid) return null;
@@ -983,11 +1026,18 @@ app.post('/api/profile/create', async (req, res) => {
 });
 
 app.get('/api/profile', async (req, res) => {
-  const data = await rtdbGet(`users/${req.user.uid}`);
+  const uid = req.user.uid;
+  const cacheKey = `profile_${uid}`;
+  const cached = cache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < 5000) {
+    return res.json(cached.data);
+  }
+  const data = await rtdbGet(`users/${uid}`);
   if (!data) return res.status(404).json({ error: 'Not found' });
   const publicData = { ...data };
   delete publicData.susScore;
   delete publicData.internalActionFlags;
+  cache.set(cacheKey, { data: publicData, ts: Date.now() });
   res.json(publicData);
 });
 
@@ -1119,6 +1169,11 @@ app.get('/api/ban-status', async (req, res) => {
 });
 
 app.get('/api/leaderboard', async (req, res) => {
+  const cacheKey = 'leaderboard';
+  const cached = cache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < 15000) {
+    return res.json(cached.data);
+  }
   const pageSize = 20;
   const lastRating = req.query.lastRating ? parseFloat(req.query.lastRating) : null;
   const lastUid = req.query.lastUid || null;
@@ -1150,12 +1205,14 @@ username: data.username || 'Player',
     if (idx >= 0) entries = entries.slice(idx + 1); 
   }
   const page = entries.slice(0, pageSize);
-  res.json({ 
-    entries: page, 
-    hasMore: entries.length > pageSize, 
-    lastUid: page.length > 0 ? page[page.length - 1].uid : null, 
-    lastRating: page.length > 0 ? page[page.length - 1].rating : null 
-  });
+  const result = {
+    entries: page,
+    hasMore: entries.length > pageSize,
+    lastUid: page.length > 0 ? page[page.length - 1].uid : null,
+    lastRating: page.length > 0 ? page[page.length - 1].rating : null
+  };
+  cache.set(cacheKey, { data: result, ts: Date.now() });
+  res.json(result);
 });
 
 app.get('/api/friends', async (req, res) => {
@@ -1593,9 +1650,15 @@ app.get('/api/matchmaking/check', async (req, res) => {
 });
 
 app.get('/api/active-games', async (req, res) => {
-  const snap = await db.ref('activeGames').once('value'); if (!snap.exists()) return res.json([]);
+  const cacheKey = 'active_games';
+  const cached = cache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < 5000) {
+    return res.json(cached.data);
+  }
+  const snap = await db.ref('activeGames').once('value'); if (!snap.exists()) { cache.set(cacheKey, { data: [], ts: Date.now() }); return res.json([]); }
   const games = [];
   snap.forEach(child => { const g = decodeGameFromStorage(child.val()); if (g.status === 'active') games.push({ id: child.key, blackPlayer: g.blackPlayer, whitePlayer: g.whitePlayer, mode: g.mode, phase: g.phase, status: g.status }); });
+  cache.set(cacheKey, { data: games, ts: Date.now() });
   res.json(games);
 });
 
@@ -2163,30 +2226,77 @@ app.post('/api/game/:gameId/rematch', async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Authentication required' });
   const oldGame = await getFinishedGame(req.params.gameId);
   if (!oldGame) return res.status(404).json({ error: 'Game not found' });
+  if (oldGame.blackPlayer.uid !== req.user.uid && oldGame.whitePlayer.uid !== req.user.uid) return res.status(403).json({ error: 'Not a player in this game' });
   const opponentUid = oldGame.blackPlayer.uid === req.user.uid ? oldGame.whitePlayer.uid : oldGame.blackPlayer.uid;
-  const opponentData = await rtdbGet(`users/${opponentUid}`);
-  if (!opponentData) return res.status(404).json({ error: 'Opponent not found' });
-  const userData = await rtdbGet(`users/${req.user.uid}`);
-  const fromColor = oldGame.blackPlayer.uid === req.user.uid ? 'black' : 'white';
-  const newBlackUid = fromColor === 'white' ? opponentUid : req.user.uid;
-  const newWhiteUid = fromColor === 'white' ? req.user.uid : opponentUid;
-  const newBlackData = newBlackUid === req.user.uid ? userData : opponentData;
-  const newWhiteData = newWhiteUid === req.user.uid ? userData : opponentData;
-  const initialState = createInitialGameState();
-  const gameId = `${Date.now()}_${newBlackUid.slice(0, 6)}_${newWhiteUid.slice(0, 6)}`;
-  const gameData = {
-    id: gameId,
-    blackPlayer: { uid: newBlackUid, username: newBlackData.username || 'Player', rating: newBlackData.rating || 1500, ratingDeviation: newBlackData.ratingDeviation || 350, piecesPlaced: 0 },
-    whitePlayer: { uid: newWhiteUid, username: newWhiteData.username || 'Player', rating: newWhiteData.rating || 1500, ratingDeviation: newWhiteData.ratingDeviation || 350, piecesPlaced: 0 },
-    board: initialState.board, currentTurn: initialState.currentTurn, phase: initialState.phase,
-    mode: oldGame.mode || 'casual', moves: [], status: 'active',
-    clock: { black: DEFAULT_TIME_MS, white: DEFAULT_TIME_MS },
-    lastMoveTimestamp: Date.now(), createdAt: Date.now(), spectators: 0, positionHistory: [],
+  const [requesterBusy, opponentBusy] = await Promise.all([isUserBusy(req.user.uid), isUserBusy(opponentUid)]);
+  if (requesterBusy.busy) return res.status(409).json({ error: 'You are already in a match', gameId: requesterBusy.gameId });
+  if (opponentBusy.busy) return res.status(409).json({ error: 'Opponent is already in a match', gameId: opponentBusy.gameId });
+
+  const requester = oldGame.blackPlayer.uid === req.user.uid ? oldGame.blackPlayer : oldGame.whitePlayer;
+  const requestRef = db.ref('rematchRequests').push();
+  const request = {
+    id: requestRef.key,
+    oldGameId: req.params.gameId,
+    fromUid: req.user.uid,
+    toUid: opponentUid,
+    fromUsername: requester.username || 'Player',
+    status: 'pending',
+    createdAt: Date.now(),
+    expiresAt: Date.now() + 5 * 60 * 1000,
   };
-  await db.ref(`activeGames/${gameId}`).set(encodeGameForStorage(gameData));
-  sendSSE(opponentUid, { type: 'match_found', gameId });
-  startClockTimer(gameId);
-  res.json({ gameId });
+  await requestRef.set(request);
+
+  const notifRef = db.ref(`notifications/${opponentUid}`).push();
+  await notifRef.set({
+    type: 'rematch_request',
+    message: `${request.fromUsername} wants a rematch`,
+    fromUid: req.user.uid,
+    fromUsername: request.fromUsername,
+    rematchRequestId: requestRef.key,
+    gameId: req.params.gameId,
+    createdAt: Date.now(),
+    read: false,
+  });
+
+  sendSSE(opponentUid, {
+    type: 'rematch_request',
+    message: `${request.fromUsername} wants a rematch`,
+    fromUid: req.user.uid,
+    fromUsername: request.fromUsername,
+    rematchRequestId: requestRef.key,
+    gameId: req.params.gameId,
+  });
+  res.json({ success: true, rematchRequestId: requestRef.key });
+});
+
+app.post('/api/rematch/:requestId/accept', async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+  const requestRef = db.ref(`rematchRequests/${req.params.requestId}`);
+  const requestSnap = await requestRef.once('value');
+  if (!requestSnap.exists()) return res.status(404).json({ error: 'Rematch request not found' });
+  const request = normalizeArrays(requestSnap.val());
+  if (request.status !== 'pending') return res.status(400).json({ error: 'Rematch request is no longer pending' });
+  if (request.expiresAt && request.expiresAt < Date.now()) {
+    await requestRef.update({ status: 'expired' });
+    return res.status(400).json({ error: 'Rematch request expired' });
+  }
+  if (request.toUid !== req.user.uid) return res.status(403).json({ error: 'This rematch request is not for you' });
+
+  const oldGame = await getFinishedGame(request.oldGameId);
+  if (!oldGame) return res.status(404).json({ error: 'Original game not found' });
+  const [requesterBusy, accepterBusy] = await Promise.all([isUserBusy(request.fromUid), isUserBusy(request.toUid)]);
+  if (requesterBusy.busy) return res.status(409).json({ error: 'Opponent is already in a match', gameId: requesterBusy.gameId });
+  if (accepterBusy.busy) return res.status(409).json({ error: 'You are already in a match', gameId: accepterBusy.gameId });
+
+  try {
+    const { gameId } = await createGameFromRematch(oldGame, request.fromUid);
+    await requestRef.update({ status: 'accepted', acceptedAt: Date.now(), newGameId: gameId });
+    sendSSE(request.fromUid, { type: 'rematch_accepted', gameId });
+    sendSSE(request.toUid, { type: 'rematch_accepted', gameId });
+    res.json({ gameId });
+  } catch (err) {
+    res.status(400).json({ error: err.message || 'Failed to create rematch' });
+  }
 });
 
 app.get('/api/game-history', async (req, res) => {

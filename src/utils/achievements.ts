@@ -115,17 +115,73 @@ export function checkAndAwardAchievements(
   unnotified.forEach(a => notified.add(a.id));
   saveNotified(notified);
 
+  if (unnotified.length > 0 && typeof window !== 'undefined') {
+    import('../components/ui/AchievementPopup').then(({ showAchievementPopup }) => {
+      unnotified.forEach((a, i) => {
+        setTimeout(() => showAchievementPopup(a), i * 600);
+      });
+    });
+  }
+
   return unnotified;
 }
 
 export function awardBotWinAchievement(strength: string) {
   const earned = loadAchievements();
+  const notified = loadNotified();
   if (strength === 'hard' && !earned['beat_hard_bot']) {
     earned['beat_hard_bot'] = Date.now();
     saveAchievements(earned);
+    if (!notified.has('beat_hard_bot')) {
+      notified.add('beat_hard_bot');
+      saveNotified(notified);
+      const a = ACHIEVEMENT_DEFS.find(d => d.id === 'beat_hard_bot')!;
+      if (typeof window !== 'undefined') {
+        import('../components/ui/AchievementPopup').then(({ showAchievementPopup }) => {
+          showAchievementPopup(a);
+        });
+      }
+    }
   }
   if ((strength === 'stockfish' || strength === 'max') && !earned['beat_max_bot']) {
     earned['beat_max_bot'] = Date.now();
     saveAchievements(earned);
+    if (!notified.has('beat_max_bot')) {
+      notified.add('beat_max_bot');
+      saveNotified(notified);
+      const a = ACHIEVEMENT_DEFS.find(d => d.id === 'beat_max_bot')!;
+      if (typeof window !== 'undefined') {
+        import('../components/ui/AchievementPopup').then(({ showAchievementPopup }) => {
+          showAchievementPopup(a);
+        });
+      }
+    }
   }
+}
+
+const RECENT_RESULTS_KEY = '4dot_recent_results';
+
+export function recordGameResult(result: 'win' | 'loss' | 'draw') {
+  try {
+    const stored = localStorage.getItem(RECENT_RESULTS_KEY);
+    const results: ('win' | 'loss' | 'draw')[] = stored ? JSON.parse(stored) : [];
+    results.push(result);
+    if (results.length > 30) results.splice(0, results.length - 30);
+    localStorage.setItem(RECENT_RESULTS_KEY, JSON.stringify(results));
+  } catch {}
+}
+
+function getRecentResults(): ('win' | 'loss' | 'draw')[] {
+  try {
+    const stored = localStorage.getItem(RECENT_RESULTS_KEY);
+    return stored ? JSON.parse(stored) : [];
+  } catch { return []; }
+}
+
+export async function checkAchievementsAfterGame(
+  stats: { wins: number; losses: number; draws: number; gamesPlayed: number; rating: number },
+  botWins?: { hard: boolean; max: boolean }
+) {
+  const recentResults = getRecentResults();
+  return checkAndAwardAchievements(stats, recentResults, botWins || { hard: false, max: false });
 }

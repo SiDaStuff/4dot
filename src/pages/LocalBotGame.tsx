@@ -10,7 +10,7 @@ import { Button } from '../components/ui/Button';
 import { Spinner } from '../components/ui/Spinner';
 import { playSoundPlace, playSoundMove, playSoundGameEnd, playSoundGameWin, playSoundGameStart } from '../utils/sounds';
 import { useSettings } from '../context/SettingsContext';
-import { awardBotWinAchievement } from '../utils/achievements';
+import { awardBotWinAchievement, checkAchievementsAfterGame, recordGameResult } from '../utils/achievements';
 import { countPiecesOnBoard } from '../utils/boardUtils';
 import { TOTAL_PIECES } from '../types';
 import type { CellOwner, Position } from '../types';
@@ -26,6 +26,9 @@ export function LocalBotGame() {
   const [premove, setPremove] = useState<{ from?: Position; to: Position } | null>(null);
   const prevMoveCountRef = useRef(0);
   const prevStatusRef = useRef<string>('');
+  const achievementCheckedRef = useRef(false);
+
+  useEffect(() => { achievementCheckedRef.current = false; }, [gameId]);
 
   const uid = user?.uid || '';
   const myColor: CellOwner = 'white';
@@ -47,14 +50,31 @@ export function LocalBotGame() {
         else playSoundPlace(settings.soundVolume);
       }
     }
-    if (game.status === 'finished' && prevStatusRef.current === 'active' && settings.soundEnabled) {
-      const isWin = game.result?.winner === 'white';
-      if (isWin) {
-        playSoundGameWin(settings.soundVolume);
-        if (game.botStrength) awardBotWinAchievement(game.botStrength);
-      } else if (game.result?.winner === 'draw') playSoundGameEnd(settings.soundVolume);
-      else playSoundGameEnd(settings.soundVolume);
-    }
+  if (game.status === 'finished' && prevStatusRef.current === 'active' && settings.soundEnabled) {
+    const isWin = game.result?.winner === 'white';
+    if (isWin) {
+      playSoundGameWin(settings.soundVolume);
+      if (game.botStrength) awardBotWinAchievement(game.botStrength);
+    } else if (game.result?.winner === 'draw') playSoundGameEnd(settings.soundVolume);
+    else playSoundGameEnd(settings.soundVolume);
+  }
+  if (game.status === 'finished' && !achievementCheckedRef.current) {
+    achievementCheckedRef.current = true;
+    const isWin = game.result?.winner === 'white';
+    const isDraw = game.result?.winner === 'draw';
+    recordGameResult(isWin ? 'win' : isDraw ? 'draw' : 'loss');
+    api.get('/api/profile').then((profile: any) => {
+      if (profile) {
+        checkAchievementsAfterGame({
+          wins: profile.wins || 0,
+          losses: profile.losses || 0,
+          draws: profile.draws || 0,
+          gamesPlayed: profile.gamesPlayed || 0,
+          rating: profile.rating || 1500,
+        }, { hard: game.botStrength === 'hard', max: game.botStrength === 'stockfish' || game.botStrength === 'max' });
+      }
+    }).catch(() => {});
+  }
     if (game.status === 'active' && prevStatusRef.current !== 'active' && prevStatusRef.current !== '' && settings.soundEnabled) {
       playSoundGameStart(settings.soundVolume);
     }

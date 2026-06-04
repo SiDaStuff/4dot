@@ -16,7 +16,7 @@ import { TOTAL_PIECES } from '../types';
 import { playSoundPlace, playSoundMove, playSoundGameEnd, playSoundGameWin, playSoundGameStart, playSoundDrawOffer } from '../utils/sounds';
 import { useSettings } from '../context/SettingsContext';
 import { showToast } from '../components/ui/Toast';
-import { awardBotWinAchievement } from '../utils/achievements';
+import { awardBotWinAchievement, checkAchievementsAfterGame, recordGameResult } from '../utils/achievements';
 import type { CellOwner, Position } from '../types';
 
 export function LiveGame() {
@@ -38,6 +38,9 @@ export function LiveGame() {
   const prevStatusRef = useRef<string>('');
   const prevTurnRef = useRef<string>('');
   const boardContainerRef = useRef<HTMLDivElement>(null);
+  const achievementCheckedRef = useRef(false);
+
+  useEffect(() => { achievementCheckedRef.current = false; }, [gameId]);
 
   const uid = user?.uid || guestUid || '';
   const myColor: CellOwner | null = game
@@ -84,6 +87,27 @@ export function LiveGame() {
   }, [game?.moves?.length, game?.status, game?.result, settings.soundEnabled, settings.soundVolume, myColor]);
 
   const premoveExecutedRef = useRef(false);
+
+  useEffect(() => {
+    if (!game || game.status !== 'finished' || achievementCheckedRef.current) return;
+    achievementCheckedRef.current = true;
+    const result = game.result;
+    if (!result) return;
+    const isWin = result.winner === myColor;
+    const isDraw = result.winner === 'draw';
+    recordGameResult(isWin ? 'win' : isDraw ? 'draw' : 'loss');
+    api.get('/api/profile').then((profile: any) => {
+      if (profile) {
+        checkAchievementsAfterGame({
+          wins: profile.wins || 0,
+          losses: profile.losses || 0,
+          draws: profile.draws || 0,
+          gamesPlayed: profile.gamesPlayed || 0,
+          rating: profile.rating || 1500,
+        });
+      }
+    }).catch(() => {});
+  }, [game?.status, game?.result, myColor]);
 
   useEffect(() => {
     if (!game || !premove || !myColor || premoveExecutedRef.current) return;

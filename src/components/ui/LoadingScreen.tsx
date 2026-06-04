@@ -1,14 +1,17 @@
 import { useState, useEffect } from 'react';
 
+let shownOnce = false;
+
 export function LoadingScreen() {
-  const [visible, setVisible] = useState(true);
+  const [visible, setVisible] = useState(!shownOnce);
   const [piecesHidden, setPiecesHidden] = useState([false, false, false, false]);
 
   useEffect(() => {
+    if (shownOnce) return;
     const timers = [200, 450, 700, 950].map((delay, i) =>
       setTimeout(() => setPiecesHidden(prev => { const n = [...prev]; n[i] = true; return n; }), delay)
     );
-    const hide = setTimeout(() => setVisible(false), 1500);
+    const hide = setTimeout(() => { setVisible(false); shownOnce = true; }, 1200);
     return () => { timers.forEach(clearTimeout); clearTimeout(hide); };
   }, []);
 

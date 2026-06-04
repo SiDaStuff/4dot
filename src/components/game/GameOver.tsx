@@ -61,8 +61,9 @@ export function GameOverOverlay({ game, myUid, onPlayAgain, onBackToDashboard, o
   const methodLabels: Record<string, string> = {
     'four-in-a-row': 'Four in a row',
     timeout: 'Timeout',
+    resign: 'Resignation',
     resignation: 'Resignation',
-    abandon: 'Opponent banned',
+    abandon: 'Opponent left',
     'draw-agreed': 'Draw agreed',
     'threefold-repetition': 'Threefold repetition',
     '100-ply': '100-ply limit',
