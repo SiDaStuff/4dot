@@ -6,6 +6,7 @@ import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { Spinner } from '../components/ui/Spinner';
+import { downloadPGN } from '../utils/pgn';
 import type { GameMode } from '../types';
 
 interface HistoryEntry {
@@ -64,6 +65,13 @@ export function GameHistory() {
 
   const resultColor = (r: string) => r === 'win' ? 'var(--color-success)' : r === 'loss' ? 'var(--color-danger)' : 'var(--color-text-muted)';
 
+  const handleExport = (e: React.MouseEvent, gameId: string) => {
+    e.stopPropagation();
+    const game = games.find(g => g.id === gameId);
+    if (!game) return;
+    downloadPGN([], game.opponent, 'You', '*', `4dot_${gameId}.pgn`);
+  };
+
   if (loading) {
     return <div className="page" style={{ textAlign: 'center', paddingTop: '4rem' }}><Spinner size={40} /></div>;
   }
@@ -115,6 +123,20 @@ export function GameHistory() {
                           {g.method ? ` · ${g.method}` : ''}
                         </div>
                       </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); navigate(`/game-review?gameId=${g.id}`); }}
+                        style={{ padding: '2px 6px', borderRadius: 'var(--radius-sm)', background: 'var(--color-dark)', color: 'white', border: 'none', fontSize: '0.7rem', cursor: 'pointer', fontWeight: 600 }}
+                      >
+                        Review
+                      </button>
+                      <button
+                        onClick={(e) => handleExport(e, g.id)}
+                        style={{ padding: '2px 6px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-secondary)', color: 'var(--color-text)', border: '1px solid var(--color-border)', fontSize: '0.7rem', cursor: 'pointer' }}
+                      >
+                        PGN
+                      </button>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <Badge variant={g.mode === 'rated' ? 'success' : 'default'}>{g.mode}</Badge>

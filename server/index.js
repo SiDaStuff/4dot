@@ -150,7 +150,7 @@ app.use('/api/notifications', authLimiter);
 app.use('/api/game-history', authLimiter);
 app.use('/api/opponent-stats', authLimiter);
 app.use('/api/rating-history', authLimiter);
-app.use('/api/activity-feed', authLimiter);
+app.use('/api/game-review', authLimiter);
 
 const publicPaths = ['/api/leaderboard', '/api/active-games'];
 const publicPathPrefixes = ['/api/ban-check/', '/api/challenge/info/', '/api/challenge/accept/', '/api/guest/events', '/api/game/', '/api/profile/public/'];
@@ -609,10 +609,11 @@ async function analyzeGameAndCheckSus(game, state, gameId) {
   if (totalMoves >= 4) {
     const matchRate = matchingMoves / totalMoves;
     let susIncrease = 0;
-    if (matchRate >= 0.95) susIncrease = 40;
-    else if (matchRate >= 0.85) susIncrease = 25;
-    else if (matchRate >= 0.75) susIncrease = 15;
-    else if (matchRate >= 0.65) susIncrease = 5;
+    let flagReason = '';
+    if (matchRate >= 0.95) { susIncrease = 40; flagReason = 'Very high engine match rate (>=95%)'; }
+    else if (matchRate >= 0.85) { susIncrease = 25; flagReason = 'High engine match rate (>=85%)'; }
+    else if (matchRate >= 0.75) { susIncrease = 15; flagReason = 'Elevated engine match rate (>=75%)'; }
+    else if (matchRate >= 0.65) { susIncrease = 5; flagReason = 'Moderate engine match rate (>=65%)'; }
 
     if (susIncrease > 0) {
       const userSnap = await db.ref(`users/${humanUid}`).once('value');
@@ -622,21 +623,23 @@ async function analyzeGameAndCheckSus(game, state, gameId) {
         const newSus = currentSus + susIncrease;
         await db.ref(`users/${humanUid}`).update({ susScore: newSus });
 
-        if (newSus >= 100) {
-          const banSnap = await db.ref(`bans/${humanUid}`).once('value');
-          const hasBeenBanned = banSnap.exists() && banSnap.val().hasBeenBanned;
-
-          if (hasBeenBanned) {
-            await banUser(humanUid, true, 'Repeated cheating violations');
-            await refundRatingsForBannedPlayer(humanUid);
-            await disableFirebaseAccount(humanUid);
-          } else {
-            await banUser(humanUid, false, 'Suspicious play pattern detected');
-            await disableFirebaseAccount(humanUid);
-          }
-          await db.ref(`users/${humanUid}`).update({ susScore: 50 });
-          sendSSE(humanUid, { type: 'banned', reason: 'Suspicious play pattern detected' });
-        }
+        await db.ref(`flaggedGames/${gameId}`).set({
+          gameId,
+          uid: humanUid,
+          username: userData.username || 'Player',
+          matchRate: Math.round(matchRate * 100),
+          totalMoves,
+          matchingMoves,
+          reason: flagReason,
+          susIncrease,
+          blackPlayer: game.blackPlayer,
+          whitePlayer: game.whitePlayer,
+          moves: state.moves || [],
+          reviewedAt: null,
+          dismissedAt: null,
+          createdAt: Date.now(),
+          status: 'pending',
+        });
       }
     }
   }
@@ -1152,21 +1155,24 @@ app.post('/api/internal-action', async (req, res) => {
     const currentSus = data.susScore || 0;
     const newSus = currentSus + 100;
     update.susScore = newSus;
-    if (newSus >= 100) {
-      const banSnap = await db.ref(`bans/${uid}`).once('value');
-      const hasBeenBanned = banSnap.exists() && banSnap.val().hasBeenBanned;
-      if (hasBeenBanned) {
-        await banUser(uid, true, 'Unauthorized client modifications');
-        await refundRatingsForBannedPlayer(uid);
-        await disableFirebaseAccount(uid);
-      } else {
-        await banUser(uid, false, 'Unauthorized client modifications');
-        await disableFirebaseAccount(uid);
-      }
-      update.susScore = 50;
-      update.hasBeenBanned = true;
-      sendSSE(uid, { type: 'banned', reason: 'Unauthorized client modifications' });
-    }
+
+    await db.ref(`flaggedGames/internal_${uid}_${Date.now()}`).set({
+      gameId: `internal_${uid}_${Date.now()}`,
+      uid,
+      username: data.username || 'Player',
+      matchRate: 100,
+      totalMoves: 0,
+      matchingMoves: 0,
+      reason: 'Unauthorized client modifications detected (3 internal action flags)',
+      susIncrease: 100,
+      blackPlayer: null,
+      whitePlayer: null,
+      moves: [],
+      reviewedAt: null,
+      dismissedAt: null,
+      createdAt: Date.now(),
+      status: 'pending',
+    });
   }
   await db.ref(`users/${uid}`).update(update);
   res.json({ success: true });
@@ -1974,19 +1980,23 @@ async function serverPollForSusAndQueuedReview() {
     for (const [uid, data] of Object.entries(allUsers)) {
       const susScore = data.susScore || 0;
       if (susScore >= 100) {
-        const banSnap = await db.ref(`bans/${uid}`).once('value');
-        if (banSnap.exists()) continue;
-        const hasBeenBannedBefore = data.hasBeenBanned || false;
-        if (hasBeenBannedBefore) {
-          await banUser(uid, true, 'Repeated cheating violations (auto-detected)');
-          await refundRatingsForBannedPlayer(uid);
-          await disableFirebaseAccount(uid);
-        } else {
-          await banUser(uid, false, 'Suspicious play pattern detected (auto)');
-          await disableFirebaseAccount(uid);
-        }
-        await db.ref(`users/${uid}`).update({ susScore: 50 });
-        sendSSE(uid, { type: 'banned', reason: 'Suspicious play pattern detected' });
+        await db.ref(`flaggedGames/sus_${uid}_${Date.now()}`).set({
+          gameId: `sus_${uid}_${Date.now()}`,
+          uid,
+          username: data.username || 'Player',
+          matchRate: 100,
+          totalMoves: 0,
+          matchingMoves: 0,
+          reason: `Suspicion score reached ${susScore} (threshold: 100)`,
+          susIncrease: 0,
+          blackPlayer: null,
+          whitePlayer: null,
+          moves: [],
+          reviewedAt: null,
+          dismissedAt: null,
+          createdAt: Date.now(),
+          status: 'pending',
+        });
       }
     }
 
@@ -1994,16 +2004,16 @@ async function serverPollForSusAndQueuedReview() {
     const reviewed = reviewedSnap.exists() ? new Set(Object.keys(reviewedSnap.val())) : new Set();
 
     const pending = [];
-  const finishedGames = await getFinishedGames();
-  finishedGames.forEach(({ id, game: g }) => {
-    if (!reviewed.has(id)) {
-      if (g.blackPlayer?.uid === 'bot' || g.whitePlayer?.uid === 'bot') {
-        db.ref(`reviewedGames/${id}`).set(true);
-        return;
+    const finishedGames = await getFinishedGames();
+    finishedGames.forEach(({ id, game: g }) => {
+      if (!reviewed.has(id)) {
+        if (g.blackPlayer?.uid === 'bot' || g.whitePlayer?.uid === 'bot') {
+          db.ref(`reviewedGames/${id}`).set(true);
+          return;
+        }
+        pending.push({ id, ...g });
       }
-      pending.push({ id, ...g });
-    }
-  });
+    });
 
     for (const game of pending.slice(0, 5)) {
       const humanUid = game.blackPlayer.uid !== 'bot' ? game.blackPlayer.uid : game.whitePlayer.uid;
@@ -2037,10 +2047,11 @@ async function serverPollForSusAndQueuedReview() {
       if (totalMoves >= 4) {
         const matchRate = matchingMoves / totalMoves;
         let susIncrease = 0;
-        if (matchRate >= 0.95) susIncrease = 40;
-        else if (matchRate >= 0.85) susIncrease = 25;
-        else if (matchRate >= 0.75) susIncrease = 15;
-        else if (matchRate >= 0.65) susIncrease = 5;
+        let flagReason = '';
+        if (matchRate >= 0.95) { susIncrease = 40; flagReason = 'Very high engine match rate (>=95%)'; }
+        else if (matchRate >= 0.85) { susIncrease = 25; flagReason = 'High engine match rate (>=85%)'; }
+        else if (matchRate >= 0.75) { susIncrease = 15; flagReason = 'Elevated engine match rate (>=75%)'; }
+        else if (matchRate >= 0.65) { susIncrease = 5; flagReason = 'Moderate engine match rate (>=65%)'; }
 
         if (susIncrease > 0) {
           const userSnap = await db.ref(`users/${humanUid}`).once('value');
@@ -2048,19 +2059,24 @@ async function serverPollForSusAndQueuedReview() {
             const currentSus = userSnap.val().susScore || 0;
             const newSus = currentSus + susIncrease;
             await db.ref(`users/${humanUid}`).update({ susScore: newSus });
-            if (newSus >= 100) {
-              const banSnap = await db.ref(`bans/${humanUid}`).once('value');
-              const hasBeenBannedBefore = banSnap.exists() && banSnap.val().hasBeenBanned;
-              if (hasBeenBannedBefore) {
-                await db.ref(`bans/${humanUid}`).set({ permanent: true, reason: 'Repeated cheating violations', createdAt: Date.now() });
-                await refundRatingsForBannedPlayer(humanUid);
-              } else {
-                await db.ref(`bans/${humanUid}`).set({ until: Date.now() + 24 * 60 * 60 * 1000, reason: 'Suspicious play pattern detected', createdAt: Date.now(), hasBeenBanned: true });
-              }
-              await db.ref(`users/${humanUid}`).update({ susScore: 50 });
-              await disableFirebaseAccount(humanUid);
-              sendSSE(humanUid, { type: 'banned', reason: 'Suspicious play pattern detected' });
-            }
+
+            await db.ref(`flaggedGames/${game.id}`).set({
+              gameId: game.id,
+              uid: humanUid,
+              username: userSnap.val().username || 'Player',
+              matchRate: Math.round(matchRate * 100),
+              totalMoves,
+              matchingMoves,
+              reason: flagReason,
+              susIncrease,
+              blackPlayer: game.blackPlayer,
+              whitePlayer: game.whitePlayer,
+              moves: game.result?.moves || [],
+              reviewedAt: null,
+              dismissedAt: null,
+              createdAt: Date.now(),
+              status: 'pending',
+            });
           }
         }
       }
@@ -2501,6 +2517,145 @@ app.get('/api/leaderboard/monthly', async (req, res) => {
   }
   const entries = Object.values(monthly).sort((a, b) => b.wins - a.wins || a.losses - b.losses);
   res.json({ entries: entries.slice(0, 50) });
+});
+
+app.get('/api/admin/flagged-games', async (req, res) => {
+  if (req.user.email !== ADMIN_EMAIL) return res.status(403).json({ error: 'Forbidden' });
+  const snap = await db.ref('flaggedGames').once('value');
+  if (!snap.exists()) return res.json([]);
+  const flagged = [];
+  snap.forEach(child => {
+    const entry = normalizeArrays(child.val());
+    if (entry.status === 'pending') {
+      flagged.push({ id: child.key, ...entry });
+    }
+  });
+  flagged.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  res.json(flagged);
+});
+
+app.post('/api/admin/flagged-games/:flagId/ban', async (req, res) => {
+  if (req.user.email !== ADMIN_EMAIL) return res.status(403).json({ error: 'Forbidden' });
+  const { flagId } = req.params;
+  const { permanent, reason } = req.body;
+  const snap = await db.ref(`flaggedGames/${flagId}`).once('value');
+  if (!snap.exists()) return res.status(404).json({ error: 'Flagged game not found' });
+  const flag = snap.val();
+  const uid = flag.uid;
+  if (!uid) return res.status(400).json({ error: 'No UID on flagged game' });
+
+  const banReason = reason || flag.reason || 'Admin ban after review';
+  await banUser(uid, permanent || false, banReason);
+  if (permanent) await refundRatingsForBannedPlayer(uid);
+  await db.ref(`flaggedGames/${flagId}`).update({ status: 'banned', reviewedAt: Date.now(), banReason });
+  await db.ref(`users/${uid}`).update({ susScore: 50 });
+  await disableFirebaseAccount(uid);
+  sendSSE(uid, { type: 'banned', reason: banReason });
+  res.json({ success: true });
+});
+
+app.post('/api/admin/flagged-games/:flagId/dismiss', async (req, res) => {
+  if (req.user.email !== ADMIN_EMAIL) return res.status(403).json({ error: 'Forbidden' });
+  const { flagId } = req.params;
+  const snap = await db.ref(`flaggedGames/${flagId}`).once('value');
+  if (!snap.exists()) return res.status(404).json({ error: 'Flagged game not found' });
+  const flag = snap.val();
+  await db.ref(`flaggedGames/${flagId}`).update({ status: 'dismissed', dismissedAt: Date.now() });
+  if (flag.uid) {
+    const userSnap = await db.ref(`users/${flag.uid}`).once('value');
+    if (userSnap.exists()) {
+      const currentSus = userSnap.val().susScore || 0;
+      const reduction = flag.susIncrease || 0;
+      await db.ref(`users/${flag.uid}`).update({ susScore: Math.max(0, currentSus - reduction) });
+    }
+  }
+  res.json({ success: true });
+});
+
+app.post('/api/game-review', async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+  const { moves, playerColor } = req.body;
+  if (!moves || !Array.isArray(moves) || !playerColor) return res.status(400).json({ error: 'moves and playerColor required' });
+
+  const simState = createInitialGameState();
+  const moveAnalysis = [];
+  let totalCpLoss = 0;
+  let excellentCount = 0;
+  let goodCount = 0;
+  let inaccuracyCount = 0;
+  let mistakeCount = 0;
+  let blunderCount = 0;
+
+  for (let i = 0; i < moves.length; i++) {
+    const move = moves[i];
+    if (move.player !== playerColor) {
+      if (simState.phase === 'placement') applyPlacement(simState, move.player, move.to);
+      else applyMovement(simState, move.player, move.from, move.to);
+      if (!simState.currentTurn) simState.currentTurn = move.player === 'black' ? 'white' : 'black';
+      continue;
+    }
+
+    const beforeEval = evaluateBoard(simState.board, playerColor);
+    const engineMove = engineFindBestMoveForPlayer(simState, playerColor, 10);
+    let bestEval = beforeEval;
+    if (engineMove) {
+      const ns = { board: cloneBoard(simState.board), currentTurn: simState.currentTurn, phase: simState.phase, moves: simState.moves, positionHistory: simState.positionHistory };
+      if (simState.phase === 'placement') applyPlacement(ns, playerColor, engineMove.to);
+      else applyMovement(ns, playerColor, engineMove.from, engineMove.to);
+      bestEval = evaluateBoard(ns.board, playerColor);
+    }
+
+    const afterState = { board: cloneBoard(simState.board), currentTurn: simState.currentTurn, phase: simState.phase, moves: simState.moves, positionHistory: simState.positionHistory };
+    if (simState.phase === 'placement') applyPlacement(afterState, playerColor, move.to);
+    else applyMovement(afterState, playerColor, move.from, move.to);
+    const afterEval = evaluateBoard(afterState.board, playerColor);
+
+    const cpLoss = Math.max(0, bestEval - afterEval);
+    let classification = 'book';
+    if (cpLoss === 0) { classification = 'best'; excellentCount++; }
+    else if (cpLoss <= 15) { classification = 'excellent'; excellentCount++; }
+    else if (cpLoss <= 50) { classification = 'good'; goodCount++; }
+    else if (cpLoss <= 150) { classification = 'inaccuracy'; inaccuracyCount++; }
+    else if (cpLoss <= 400) { classification = 'mistake'; mistakeCount++; }
+    else { classification = 'blunder'; blunderCount++; }
+
+    totalCpLoss += cpLoss;
+
+    moveAnalysis.push({
+      moveNumber: move.moveNumber || i + 1,
+      player: move.player,
+      from: move.from || null,
+      to: move.to,
+      classification,
+      cpLoss,
+      engineMove: engineMove ? { from: engineMove.from || null, to: engineMove.to } : null,
+      beforeEval,
+      bestEval,
+      afterEval,
+    });
+
+    simState.board = afterState.board;
+    simState.currentTurn = playerColor === 'black' ? 'white' : 'black';
+    if (afterState.phase === 'movement') simState.phase = 'movement';
+  }
+
+  const totalPlayerMoves = moveAnalysis.length;
+  let accuracy = 100;
+  if (totalPlayerMoves > 0) {
+    const avgCpLoss = totalCpLoss / totalPlayerMoves;
+    accuracy = Math.max(0, Math.min(100, Math.round(100 - avgCpLoss * 0.15)));
+  }
+
+  res.json({
+    accuracy,
+    moveAnalysis,
+    totalPlayerMoves,
+    excellentCount,
+    goodCount,
+    inaccuracyCount,
+    mistakeCount,
+    blunderCount,
+  });
 });
 
 setInterval(() => { serverPollForSusAndQueuedReview().catch(err => console.error('Poll error:', err.message)); }, 60 * 1000);

@@ -1,9 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Spinner } from '../components/ui/Spinner';
+import { AnalysisBoard } from '../components/game/AnalysisBoard';
+import { createInitialGameState } from '../utils/gameLogic';
+import type { CellOwner, Move } from '../types';
 
 interface Player {
   uid: string;
@@ -16,6 +19,23 @@ interface Player {
   banned: string | false;
   banReason: string | null;
   banUntil: number | null;
+}
+
+interface FlaggedGame {
+  id: string;
+  gameId: string;
+  uid: string;
+  username: string;
+  matchRate: number;
+  totalMoves: number;
+  matchingMoves: number;
+  reason: string;
+  susIncrease: number;
+  blackPlayer: any;
+  whitePlayer: any;
+  moves: Move[];
+  createdAt: number;
+  status: string;
 }
 
 const BAN_REASONS = [
@@ -47,6 +67,12 @@ export function Admin() {
   const [refundReason, setRefundReason] = useState('');
   const [refundGameId, setRefundGameId] = useState('');
   const [refundLoading, setRefundLoading] = useState(false);
+  const [flaggedGames, setFlaggedGames] = useState<FlaggedGame[]>([]);
+  const [flaggedLoading, setFlaggedLoading] = useState(false);
+  const [reviewingFlag, setReviewingFlag] = useState<FlaggedGame | null>(null);
+  const [reviewMoveIndex, setReviewMoveIndex] = useState(-1);
+  const [reviewBanReason, setReviewBanReason] = useState('');
+  const [reviewBanPermanent, setReviewBanPermanent] = useState(false);
 
   const isAdmin = user?.email === 'sidamailbox@gmail.com';
 
@@ -54,8 +80,38 @@ export function Admin() {
     if (isAdmin) {
       loadPlayers();
       loadActiveGames();
+      loadFlaggedGames();
     }
   }, [isAdmin]);
+
+  const loadFlaggedGames = async () => {
+    setFlaggedLoading(true);
+    try {
+      const data = await api.get('/api/admin/flagged-games');
+      setFlaggedGames(data);
+    } catch {}
+    setFlaggedLoading(false);
+  };
+
+  const getBoardAtMove = useCallback((moves: Move[], moveIndex: number): CellOwner[][] => {
+    const temp = createInitialGameState();
+    for (let i = 0; i <= moveIndex; i++) {
+      const move = moves[i];
+      if (!move) continue;
+      if (move.player !== temp.currentTurn) temp.currentTurn = move.player;
+      if (temp.phase === 'placement') {
+        temp.board[move.to.row][move.to.col] = move.player;
+        const bp = temp.board.flat().filter((c: any) => c === 'black').length;
+        const wp = temp.board.flat().filter((c: any) => c === 'white').length;
+        if (bp >= 8 && wp >= 8) temp.phase = 'movement';
+      } else {
+        temp.board[move.to.row][move.to.col] = move.player;
+        if (move.from) temp.board[move.from.row][move.from.col] = null;
+      }
+      temp.currentTurn = move.player === 'black' ? 'white' : 'black';
+    }
+    return temp.board;
+  }, []);
 
   const loadPlayers = async () => {
     setLoading(true);
@@ -137,6 +193,38 @@ export function Admin() {
       setError(err.message);
     } finally {
       setRefundLoading(false);
+    }
+  };
+
+  const handleFlagBan = async (flagId: string) => {
+    setActionLoading(flagId);
+    try {
+      await api.post(`/api/admin/flagged-games/${flagId}/ban`, {
+        permanent: reviewBanPermanent,
+        reason: reviewBanReason || undefined,
+      });
+      setMsg('Player has been banned');
+      setReviewingFlag(null);
+      await loadFlaggedGames();
+      await loadPlayers();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleFlagDismiss = async (flagId: string) => {
+    setActionLoading(flagId);
+    try {
+      await api.post(`/api/admin/flagged-games/${flagId}/dismiss`);
+      setMsg('Flag has been dismissed');
+      await loadFlaggedGames();
+      await loadPlayers();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -365,6 +453,151 @@ export function Admin() {
           Refund Rating
         </Button>
       </div>
+    </Card>
+
+    <Card padding="1.5rem" style={{ marginBottom: '1.5rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+        <h3 style={{ color: 'var(--color-dark)' }}>
+          <span className="material-symbols-outlined" style={{ fontSize: '1.2rem', verticalAlign: 'middle', marginRight: 6 }}>flag</span>
+          Flagged Games ({flaggedGames.length})
+        </h3>
+        <Button variant="secondary" size="sm" onClick={loadFlaggedGames} loading={flaggedLoading}>
+          Refresh
+        </Button>
+      </div>
+
+      {reviewingFlag && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+        }}>
+          <div style={{
+            background: 'white', borderRadius: 'var(--radius-lg)',
+            padding: '1.5rem', maxWidth: 700, width: '95%', maxHeight: '90vh',
+            overflowY: 'auto', boxShadow: 'var(--shadow-xl)',
+          }}>
+            <h3 style={{ color: 'var(--color-dark)', marginBottom: '0.75rem' }}>
+              Review: {reviewingFlag.username} ({reviewingFlag.matchRate}% match)
+            </h3>
+            <div style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)', marginBottom: '0.5rem' }}>
+              Reason: {reviewingFlag.reason} · {reviewingFlag.matchingMoves}/{reviewingFlag.totalMoves} matching moves
+            </div>
+
+            {reviewingFlag.moves && reviewingFlag.moves.length > 0 && (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '0.5rem' }}>
+                  <AnalysisBoard
+                    board={reviewMoveIndex >= 0
+                      ? getBoardAtMove(reviewingFlag.moves, reviewMoveIndex)
+                      : getBoardAtMove(reviewingFlag.moves, reviewingFlag.moves.length - 1)}
+                    currentMoveIndex={reviewMoveIndex >= 0 ? reviewMoveIndex + 1 : reviewingFlag.moves.length}
+                    totalMoves={reviewingFlag.moves.length}
+                    lastMove={reviewMoveIndex >= 0 ? reviewingFlag.moves[reviewMoveIndex] : reviewingFlag.moves[reviewingFlag.moves.length - 1]}
+                    interactive={false}
+                  />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'center', gap: 4, marginBottom: '1rem' }}>
+                  <Button variant="ghost" size="sm" onClick={() => setReviewMoveIndex(0)}>
+                    <span className="material-symbols-outlined" style={{ fontSize: '1rem' }}>skip_previous</span>
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setReviewMoveIndex(Math.max(0, reviewMoveIndex - 1))}>
+                    <span className="material-symbols-outlined" style={{ fontSize: '1rem' }}>chevron_left</span>
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setReviewMoveIndex(Math.min(reviewingFlag.moves.length - 1, reviewMoveIndex + 1))}>
+                    <span className="material-symbols-outlined" style={{ fontSize: '1rem' }}>chevron_right</span>
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setReviewMoveIndex(reviewingFlag.moves.length - 1)}>
+                    <span className="material-symbols-outlined" style={{ fontSize: '1rem' }}>skip_next</span>
+                  </Button>
+                </div>
+              </>
+            )}
+
+            <div style={{ marginBottom: '0.75rem' }}>
+              <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--color-text-secondary)', marginBottom: 4 }}>Ban Reason</label>
+              <input
+                value={reviewBanReason}
+                onChange={e => setReviewBanReason(e.target.value)}
+                placeholder={reviewingFlag.reason}
+                style={{ width: '100%', padding: '8px 12px', borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)', fontSize: '0.85rem' }}
+              />
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: '1rem' }}>
+              <input type="checkbox" checked={reviewBanPermanent} onChange={e => setReviewBanPermanent(e.target.checked)} />
+              <span style={{ fontSize: '0.85rem' }}>Permanent ban</span>
+            </label>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <Button variant="secondary" size="sm" onClick={() => { setReviewingFlag(null); setReviewMoveIndex(-1); }}>Cancel</Button>
+              <Button variant="ghost" size="sm" onClick={() => handleFlagDismiss(reviewingFlag.id)} loading={actionLoading === reviewingFlag.id}>Dismiss Flag</Button>
+              <Button variant="danger" size="sm" onClick={() => handleFlagBan(reviewingFlag.id)} loading={actionLoading === reviewingFlag.id}>Ban Player</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {flaggedLoading ? (
+        <div style={{ textAlign: 'center', padding: '2rem' }}><Spinner size={32} /></div>
+      ) : flaggedGames.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>No flagged games</div>
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+            <thead>
+              <tr style={{ borderBottom: '2px solid var(--color-border)' }}>
+                <th style={{ padding: '8px 6px', textAlign: 'left', color: 'var(--color-text-secondary)' }}>Player</th>
+                <th style={{ padding: '8px 6px', textAlign: 'center', color: 'var(--color-text-secondary)' }}>Match Rate</th>
+                <th style={{ padding: '8px 6px', textAlign: 'center', color: 'var(--color-text-secondary)' }}>Moves</th>
+                <th style={{ padding: '8px 6px', textAlign: 'left', color: 'var(--color-text-secondary)' }}>Reason</th>
+                <th style={{ padding: '8px 6px', textAlign: 'center', color: 'var(--color-text-secondary)' }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {flaggedGames.map(f => (
+                <tr key={f.id} style={{ borderBottom: '1px solid var(--color-border-light)' }}>
+                  <td style={{ padding: '8px 6px' }}>
+                    <div style={{ fontWeight: 600, color: 'var(--color-dark)' }}>{f.username}</div>
+                    <div style={{ color: 'var(--color-text-muted)', fontSize: '0.7rem' }}>{f.uid}</div>
+                  </td>
+                  <td style={{ padding: '8px 6px', textAlign: 'center' }}>
+                    <span style={{
+                      display: 'inline-block', padding: '2px 8px', borderRadius: 'var(--radius-sm)',
+                      background: f.matchRate >= 85 ? 'var(--color-danger)' : f.matchRate >= 70 ? 'var(--color-warning)' : '#F59E0B',
+                      color: 'white', fontWeight: 700, fontSize: '0.75rem',
+                    }}>
+                      {f.matchRate}%
+                    </span>
+                  </td>
+                  <td style={{ padding: '8px 6px', textAlign: 'center' }}>{f.matchingMoves}/{f.totalMoves}</td>
+                  <td style={{ padding: '8px 6px', fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>{f.reason}</td>
+                  <td style={{ padding: '8px 6px', textAlign: 'center' }}>
+                    <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
+                      <button
+                        onClick={() => { setReviewingFlag(f); setReviewMoveIndex(-1); setReviewBanReason(''); setReviewBanPermanent(false); }}
+                        style={{ padding: '3px 8px', borderRadius: 'var(--radius-sm)', background: 'var(--color-primary)', color: 'var(--color-text)', border: 'none', fontSize: '0.7rem', cursor: 'pointer', fontWeight: 600 }}
+                      >
+                        Review
+                      </button>
+                      <button
+                        onClick={() => handleFlagDismiss(f.id)}
+                        disabled={actionLoading === f.id}
+                        style={{ padding: '3px 8px', borderRadius: 'var(--radius-sm)', background: 'var(--color-success)', color: 'white', border: 'none', fontSize: '0.7rem', cursor: 'pointer', fontWeight: 600 }}
+                      >
+                        Dismiss
+                      </button>
+                      <button
+                        onClick={() => { setReviewingFlag(f); setReviewMoveIndex(-1); setReviewBanReason(''); setReviewBanPermanent(false); }}
+                        style={{ padding: '3px 8px', borderRadius: 'var(--radius-sm)', background: 'var(--color-danger)', color: 'white', border: 'none', fontSize: '0.7rem', cursor: 'pointer', fontWeight: 600 }}
+                      >
+                        Ban
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </Card>
 
     <Card padding="1.5rem">

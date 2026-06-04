@@ -14,6 +14,7 @@ import { awardBotWinAchievement, checkAchievementsAfterGame, recordGameResult } 
 import { api } from '../services/api';
 import { countPiecesOnBoard } from '../utils/boardUtils';
 import { TOTAL_PIECES } from '../types';
+import { downloadPGN } from '../utils/pgn';
 import type { CellOwner, Position } from '../types';
 import { useState, useCallback, useEffect, useRef } from 'react';
 
@@ -201,16 +202,24 @@ export function LocalBotGame() {
               </div>
               <Clock timeMs={clock.black} isActive={game.status === 'active'} isMyTurn={false} lastMoveTimestamp={game.lastMoveTimestamp} currentTurn={game.currentTurn} myColor={myColor || undefined} playerColor="black" />
             </div>
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => updateSetting('boardFlipped', !settings.boardFlipped)}
-                title="Flip board (F)"
-              >
-                <span className="material-symbols-outlined" style={{ fontSize: '1.1rem' }}>flip</span>
-              </Button>
-            </div>
+      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => updateSetting('boardFlipped', !settings.boardFlipped)}
+          title="Flip board (F)"
+        >
+          <span className="material-symbols-outlined" style={{ fontSize: '1.1rem' }}>flip</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => downloadPGN(game.moves || [], 'Bot', 'You', game.result?.winner === 'draw' ? '1/2-1/2' : game.result?.winner === 'white' ? '1-0' : '0-1', `4dot_bot_${gameId}.pgn`)}
+          title="Export PGN"
+        >
+          <span className="material-symbols-outlined" style={{ fontSize: '1.1rem' }}>download</span>
+        </Button>
+      </div>
             <div>
               <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', textAlign: 'right' }}>
                 White (You)

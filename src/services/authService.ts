@@ -14,7 +14,14 @@ export async function signUp(email: string, password: string, username: string) 
   const credential = await createUserWithEmailAndPassword(auth, email, password);
   const token = await credential.user.getIdToken();
   setAuthToken(token);
-  await apiPost('/api/profile/create', { username, email, uid: credential.user.uid });
+  try {
+    const result = await apiPost('/api/profile/create', { username, email, uid: credential.user.uid });
+    if (!result.success) {
+      console.error('Profile creation returned non-success:', result);
+    }
+  } catch (err) {
+    console.error('Failed to create profile on server:', err);
+  }
   return credential;
 }
 
@@ -96,10 +103,42 @@ export function startTokenRefresh(user: User | null) {
 
 export async function signInWithGoogle() {
   const provider = new GoogleAuthProvider();
-  const credential = await signInWithPopup(auth, provider);
+  let credential;
+  try {
+    credential = await signInWithPopup(auth, provider);
+  } catch (err: any) {
+    if (err.code === 'auth/user-disabled') {
+      const email = err.customData?.email || '';
+      if (email) {
+        const banRes = await fetch(`${API_URL}/api/ban-check/${encodeURIComponent(email)}`, { method: 'GET' });
+        if (banRes.ok) {
+          const banData = await banRes.json();
+          if (banData.banned) {
+            throw new Error(`BANNED:${banData.reason || 'Account suspended'}:${banData.permanent ? 'permanent' : 'temporary'}:${banData.until || ''}`);
+          }
+        }
+      }
+      throw new Error('BANNED:Account suspended by administrator:permanent:');
+    }
+    throw err;
+  }
+
   const token = await credential.user.getIdToken();
   setAuthToken(token);
-  await apiPost('/api/profile/create', { email: credential.user.email, uid: credential.user.uid, username: credential.user.displayName || credential.user.email!.split('@')[0] });
+
+  const banStatus = await checkBanStatus(token);
+  if (banStatus.banned) {
+    setAuthToken(null);
+    await signOut(auth);
+    const reason = banStatus.reason || 'Account suspended';
+    throw new Error(`BANNED:${reason}:${banStatus.permanent ? 'permanent' : 'temporary'}:${banStatus.until || ''}`);
+  }
+
+  try {
+    await apiPost('/api/profile/create', { email: credential.user.email, uid: credential.user.uid, username: credential.user.displayName || credential.user.email!.split('@')[0] });
+  } catch (err) {
+    console.error('Failed to create profile on server:', err);
+  }
   return credential;
 }
 
@@ -110,5 +149,10 @@ async function apiPost(path: string, body: any) {
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
   });
+  if (!res.ok) {
+    let errorMsg = `Profile creation failed (${res.status})`;
+    try { const errData = await res.json(); errorMsg = errData.error || errorMsg; } catch {}
+    throw new Error(errorMsg);
+  }
   return res.json();
 }

@@ -180,6 +180,11 @@ input, button, textarea, select {
   100% { transform: scale(1); }
 }
 
+@keyframes arrowPulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
 .animate-fade-in {
   animation: fadeIn var(--transition-normal) ease-out;
 }

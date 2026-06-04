@@ -26,6 +26,8 @@ const Admin = lazy(() => import('./pages/Admin').then(m => ({ default: m.Admin }
 const NotFound = lazy(() => import('./pages/NotFound').then(m => ({ default: m.NotFound })));
 const Challenge = lazy(() => import('./pages/Challenge').then(m => ({ default: m.Challenge })));
 const GameHistory = lazy(() => import('./pages/GameHistory').then(m => ({ default: m.GameHistory })));
+const Analysis = lazy(() => import('./pages/Analysis').then(m => ({ default: m.Analysis })));
+const GameReview = lazy(() => import('./pages/GameReview').then(m => ({ default: m.GameReview })));
 
 function LazyFallback() {
   return <div style={{ display: 'flex', justifyContent: 'center', paddingTop: '4rem' }}><Spinner size={40} /></div>;
@@ -56,6 +58,9 @@ export default function App() {
                   <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
                   <Route path="/spectate" element={<Spectate />} />
                   <Route path="/game-history" element={<ProtectedRoute><GameHistory /></ProtectedRoute>} />
+          <Route path="/analysis" element={<ProtectedRoute><Analysis /></ProtectedRoute>} />
+          <Route path="/game-review" element={<ProtectedRoute><GameReview /></ProtectedRoute>} />
+          <Route path="/game-review/:gameId" element={<ProtectedRoute><GameReview /></ProtectedRoute>} />
                   <Route path="/admin" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
                   <Route path="/challenge/:code" element={<Challenge />} />
                   <Route path="*" element={<NotFound />} />

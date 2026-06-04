@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import type { Game, CellOwner } from '../../types';
 import { Confetti } from './Confetti';
 import { useSettings } from '../../context/SettingsContext';
+import { downloadPGN } from '../../utils/pgn';
 
 interface GameOverProps {
   game: Game;
@@ -74,6 +75,16 @@ export function GameOverOverlay({ game, myUid, onPlayAgain, onBackToDashboard, o
   const myRatingChange = myColor === 'black' ? result.ratingChangeBlack : result.ratingChangeWhite;
 
   const shareUrl = `${window.location.origin}/game/${game.id}`;
+
+  const handleExportPGN = () => {
+    downloadPGN(
+      game.moves || [],
+      game.blackPlayer.username,
+      game.whitePlayer.username,
+      result.winner === 'draw' ? '1/2-1/2' : result.winner === 'black' ? '0-1' : '1-0',
+      `4dot_${game.id}.pgn`
+    );
+  };
 
   const handleShare = async () => {
     const text = isDraw
@@ -226,10 +237,19 @@ export function GameOverOverlay({ game, myUid, onPlayAgain, onBackToDashboard, o
             color: 'var(--color-text)', fontWeight: 600, cursor: 'pointer',
             fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: 4,
           }}>
-            <span className="material-symbols-outlined" style={{ fontSize: '1rem' }}>share</span>
-            {copied ? 'Copied!' : 'Share'}
-          </button>
-        </div>
+      <span className="material-symbols-outlined" style={{ fontSize: '1rem' }}>share</span>
+      {copied ? 'Copied!' : 'Share'}
+    </button>
+    <button onClick={handleExportPGN} style={{
+      padding: '6px 14px', borderRadius: 'var(--radius-md)',
+      background: 'var(--color-bg-secondary)', border: '1px solid var(--color-border)',
+      color: 'var(--color-text)', fontWeight: 600, cursor: 'pointer',
+      fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: 4,
+    }}>
+      <span className="material-symbols-outlined" style={{ fontSize: '1rem' }}>download</span>
+      PGN
+    </button>
+  </div>
       </div>
     </div>
   );

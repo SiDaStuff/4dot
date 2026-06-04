@@ -102,12 +102,19 @@ export function LoginForm() {
   const handleGoogle = async () => {
     setGoogleLoading(true);
     setError('');
+    setBanInfo(null);
     try {
       await signInWithGoogle();
       showToast('Signed in with Google!', 'success');
       navigate('/dashboard');
     } catch (err: any) {
-      setError(friendlyError(err.code || '', err.message || 'Google sign-in failed'));
+      const msg = err.message || 'Google sign-in failed';
+      if (msg.startsWith('BANNED:')) {
+        const parts = msg.split(':');
+        setBanInfo({ reason: parts[1] || 'Account suspended', permanent: (parts[2] || 'temporary') === 'permanent', until: parts[3] ? Number(parts[3]) : 0 });
+      } else {
+        setError(friendlyError(err.code || '', msg));
+      }
     } finally {
       setGoogleLoading(false);
     }

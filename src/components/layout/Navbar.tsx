@@ -70,6 +70,12 @@ export function Navbar() {
         <Link to="/game-history" onClick={() => setMobileMenuOpen(false)} style={{ color: 'var(--color-text-secondary)', fontSize: '0.875rem', textDecoration: 'none', padding: '8px 0' }}>
           History
         </Link>
+        <Link to="/analysis" onClick={() => setMobileMenuOpen(false)} style={{ color: 'var(--color-text-secondary)', fontSize: '0.875rem', textDecoration: 'none', padding: '8px 0' }}>
+          Analysis
+        </Link>
+        <Link to="/game-review" onClick={() => setMobileMenuOpen(false)} style={{ color: 'var(--color-text-secondary)', fontSize: '0.875rem', textDecoration: 'none', padding: '8px 0' }}>
+          Review
+        </Link>
       </>
     ) : null;
 
@@ -281,9 +287,15 @@ export function Navbar() {
         <Link to="/friends" onClick={() => setMobileMenuOpen(false)} style={{ padding: '10px 0', color: 'var(--color-text-secondary)', textDecoration: 'none', fontSize: '0.875rem' }}>
           Friends
         </Link>
-        <Link to="/game-history" onClick={() => setMobileMenuOpen(false)} style={{ padding: '10px 0', color: 'var(--color-text-secondary)', textDecoration: 'none', fontSize: '0.875rem' }}>
-          History
-        </Link>
+            <Link to="/game-history" onClick={() => setMobileMenuOpen(false)} style={{ padding: '10px 0', color: 'var(--color-text-secondary)', textDecoration: 'none', fontSize: '0.875rem' }}>
+              History
+            </Link>
+            <Link to="/analysis" onClick={() => setMobileMenuOpen(false)} style={{ padding: '10px 0', color: 'var(--color-text-secondary)', textDecoration: 'none', fontSize: '0.875rem' }}>
+              Analysis
+            </Link>
+            <Link to="/game-review" onClick={() => setMobileMenuOpen(false)} style={{ padding: '10px 0', color: 'var(--color-text-secondary)', textDecoration: 'none', fontSize: '0.875rem' }}>
+              Review
+            </Link>
           <div style={{ height: 1, background: 'var(--color-border-light)', margin: '4px 0' }} />
         <Link to="/profile" onClick={() => setMobileMenuOpen(false)} style={{ padding: '10px 0', color: 'var(--color-text-secondary)', textDecoration: 'none', fontSize: '0.875rem' }}>
           Profile
