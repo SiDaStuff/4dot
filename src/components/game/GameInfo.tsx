@@ -2,6 +2,8 @@ import React from 'react';
 import type { Game } from '../../types';
 import { useNavigate } from 'react-router-dom';
 import { Badge } from '../ui/Badge';
+import { countPiecesOnBoard } from '../../utils/boardUtils';
+import { TOTAL_PIECES } from '../../types';
 
 interface GameInfoProps {
   game: Game;
@@ -11,6 +13,12 @@ interface GameInfoProps {
 export const GameInfo = React.memo(function GameInfo({ game, myUid }: GameInfoProps) {
   const navigate = useNavigate();
   const myColor = game.blackPlayer.uid === myUid ? 'black' : 'white';
+
+  const blackOnBoard = countPiecesOnBoard(game.board, 'black');
+  const whiteOnBoard = countPiecesOnBoard(game.board, 'white');
+  const blackRemaining = TOTAL_PIECES - blackOnBoard;
+  const whiteRemaining = TOTAL_PIECES - whiteOnBoard;
+  const isPlacement = game.phase === 'placement';
 
   return (
     <div style={{
@@ -49,7 +57,19 @@ export const GameInfo = React.memo(function GameInfo({ game, myUid }: GameInfoPr
               ({game.blackPlayer.rating})
             </span>
           </div>
-          <div style={{ color: 'var(--color-text-secondary)', fontSize: '0.75rem' }}>Black</div>
+          <div style={{ color: 'var(--color-text-secondary)', fontSize: '0.75rem' }}>
+            Black
+            {isPlacement && (
+              <span style={{ marginLeft: 6, color: 'var(--color-text-muted)' }}>
+                {blackRemaining}/{TOTAL_PIECES}
+              </span>
+            )}
+            {!isPlacement && game.phase !== 'finished' && (
+              <span style={{ marginLeft: 6, color: 'var(--color-text-muted)' }}>
+                {blackOnBoard} pcs
+              </span>
+            )}
+          </div>
         </div>
       </button>
 
@@ -79,7 +99,19 @@ export const GameInfo = React.memo(function GameInfo({ game, myUid }: GameInfoPr
               ({game.whitePlayer.rating})
             </span>
           </div>
-          <div style={{ color: 'var(--color-text-secondary)', fontSize: '0.75rem' }}>White</div>
+          <div style={{ color: 'var(--color-text-secondary)', fontSize: '0.75rem' }}>
+            White
+            {isPlacement && (
+              <span style={{ marginLeft: 6, color: 'var(--color-text-muted)' }}>
+                {whiteRemaining}/{TOTAL_PIECES}
+              </span>
+            )}
+            {!isPlacement && game.phase !== 'finished' && (
+              <span style={{ marginLeft: 6, color: 'var(--color-text-muted)' }}>
+                {whiteOnBoard} pcs
+              </span>
+            )}
+          </div>
         </div>
         <div style={{
           width: 14, height: 14, borderRadius: '50%',

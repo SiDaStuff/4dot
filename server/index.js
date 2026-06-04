@@ -809,6 +809,15 @@ app.get('/api/guest/events', (req, res) => {
   req.on('close', () => { const clients = guestSseClients.get(uid); if (clients) { clients.delete(res); if (clients.size === 0) guestSseClients.delete(uid); } });
 });
 
+setInterval(() => {
+  for (const clients of sseClients.values()) {
+    clients.forEach(res => { try { res.write(': keepalive\n\n'); } catch {} });
+  }
+  for (const clients of guestSseClients.values()) {
+    clients.forEach(res => { try { res.write(': keepalive\n\n'); } catch {} });
+  }
+}, 30000);
+
 function sendSSE(uid, data) {
   const clients = sseClients.get(uid);
   if (clients) clients.forEach(res => { try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch {} });

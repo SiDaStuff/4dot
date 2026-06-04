@@ -19,3 +19,8 @@ Thumbs.db
 *.pem
 *.key
 serviceAccount*.json
+
+build/
+coverage/
+.temp/
+*.log

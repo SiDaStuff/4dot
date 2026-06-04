@@ -11,6 +11,8 @@ import { GameOverOverlay } from '../components/game/GameOver';
 import { Button } from '../components/ui/Button';
 import { Spinner } from '../components/ui/Spinner';
 import { getWinLine } from '../utils/boardUtils';
+import { countPiecesOnBoard } from '../utils/boardUtils';
+import { TOTAL_PIECES } from '../types';
 import { playSoundPlace, playSoundMove, playSoundGameEnd, playSoundGameWin, playSoundGameStart, playSoundDrawOffer } from '../utils/sounds';
 import { useSettings } from '../context/SettingsContext';
 import { showToast } from '../components/ui/Toast';
@@ -23,7 +25,7 @@ export function LiveGame() {
   const guestUid = searchParams.get('guestUid') || undefined;
   const { user } = useAuth();
   const navigate = useNavigate();
-  const { game, loading } = useGame(gameId, guestUid);
+  const { game, loading, applyOptimisticMove } = useGame(gameId, guestUid);
   const { settings, updateSetting } = useSettings();
   const [selectedPos, setSelectedPos] = useState<Position | null>(null);
   const winLineRef = useRef<Position[] | null>(null);
@@ -43,6 +45,11 @@ export function LiveGame() {
     : null;
   const isSpectator = myColor === null && game?.status === 'active';
 
+  const blackOnBoard = game ? countPiecesOnBoard(game.board, 'black') : 0;
+  const whiteOnBoard = game ? countPiecesOnBoard(game.board, 'white') : 0;
+  const blackRemaining = TOTAL_PIECES - blackOnBoard;
+  const whiteRemaining = TOTAL_PIECES - whiteOnBoard;
+
   useEffect(() => {
     if (game?.status === 'finished' && game.result) {
       winLineRef.current = null;
@@ -61,9 +68,6 @@ export function LiveGame() {
       if (settings.soundEnabled) {
         if (latestMove.from) playSoundMove(settings.soundVolume);
         else playSoundPlace(settings.soundVolume);
-      }
-      if (premove && game.currentTurn === myColor) {
-        // premove handled below
       }
     }
     if (game.status === 'finished' && prevStatusRef.current === 'active' && settings.soundEnabled) {
@@ -86,12 +90,14 @@ export function LiveGame() {
     if (game.currentTurn === myColor && game.status === 'active') {
       premoveExecutedRef.current = true;
       if (game.phase === 'movement' && premove.from) {
+        applyOptimisticMove(myColor, premove.from, premove.to);
         makeMove(gameId!, uid, premove.from, premove.to, guestUid).then((result) => {
           setPremove(null);
           setSelectedPos(null);
           premoveExecutedRef.current = false;
         });
       } else if (game.phase === 'placement' && !premove.from) {
+        applyOptimisticMove(myColor, undefined, premove.to);
         makeMove(gameId!, uid, undefined, premove.to, guestUid).then((result) => {
           setPremove(null);
           premoveExecutedRef.current = false;
@@ -156,14 +162,17 @@ export function LiveGame() {
     setMoveLoading(true);
     try {
       if (game.phase === 'placement') {
+        applyOptimisticMove(myColor, undefined, pos);
         const result = await makeMove(gameId!, uid, undefined, pos, guestUid);
         if (!result.error) setSelectedPos(null);
       } else if (game.phase === 'movement') {
         if (game.board[pos.row][pos.col] === myColor) {
           setSelectedPos(pos);
+          setMoveLoading(false);
           return;
         }
         if (selectedPos) {
+          applyOptimisticMove(myColor, selectedPos, pos);
           const result = await makeMove(gameId!, uid, selectedPos, pos, guestUid);
           setSelectedPos(null);
         }
@@ -174,7 +183,7 @@ export function LiveGame() {
     } finally {
       setMoveLoading(false);
     }
-  }, [game, uid, myColor, gameId, selectedPos, moveLoading, guestUid, settings.premoveEnabled]);
+  }, [game, uid, myColor, gameId, selectedPos, moveLoading, guestUid, settings.premoveEnabled, applyOptimisticMove]);
 
   const handleResign = async () => {
     try {
@@ -244,7 +253,12 @@ export function LiveGame() {
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem', marginBottom: '1rem' }}>
             <div>
-              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Black</div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
+                Black
+                <span style={{ marginLeft: 8, fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+                  {game.phase === 'placement' ? `${blackRemaining} left` : `${blackOnBoard} pcs`}
+                </span>
+              </div>
               <Clock
                 timeMs={clock.black}
                 isActive={game.status === 'active'}
@@ -252,6 +266,7 @@ export function LiveGame() {
                 lastMoveTimestamp={game.lastMoveTimestamp}
                 currentTurn={game.currentTurn}
                 myColor={myColor || undefined}
+                playerColor="black"
               />
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
@@ -265,7 +280,12 @@ export function LiveGame() {
               </Button>
             </div>
             <div>
-              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', textAlign: 'right' }}>White</div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', textAlign: 'right' }}>
+                White
+                <span style={{ marginLeft: 8, fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+                  {game.phase === 'placement' ? `${whiteRemaining} left` : `${whiteOnBoard} pcs`}
+                </span>
+              </div>
               <Clock
                 timeMs={clock.white}
                 isActive={game.status === 'active'}
@@ -273,6 +293,7 @@ export function LiveGame() {
                 lastMoveTimestamp={game.lastMoveTimestamp}
                 currentTurn={game.currentTurn}
                 myColor={myColor || undefined}
+                playerColor="white"
               />
             </div>
           </div>
@@ -320,8 +341,7 @@ export function LiveGame() {
             {premove && (
               <span style={{
                 padding: '8px 16px', borderRadius: 'var(--radius-md)',
-                background: 'var(--color-secondary)',
-                color: 'var(--color-dark)',
+                background: 'var(--color-secondary)', color: 'var(--color-dark)',
                 fontSize: '0.8rem', fontWeight: 600,
                 border: '1px solid var(--color-border)',
               }}>

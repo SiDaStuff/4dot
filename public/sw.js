@@ -1,4 +1,4 @@
-const CACHE_NAME = '4dot-cache-v3';
+const CACHE_NAME = '4dot-cache-v4';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -8,9 +8,14 @@ const STATIC_ASSETS = [
   '/icons/icon-512x512.svg',
 ];
 
-const API_CACHE_NAME = '4dot-api-cache-v1';
+const API_CACHE_NAME = '4dot-api-cache-v2';
 const API_CACHEABLE = ['/api/leaderboard', '/api/active-games'];
 const API_TTL = 30000;
+
+const NEVER_CACHE = [
+  '/api/events',
+  '/api/guest/events',
+];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -22,8 +27,12 @@ self.addEventListener('install', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
+  if (event.request.method !== 'GET') return;
+
+  if (NEVER_CACHE.some(path => url.pathname.startsWith(path))) return;
+
   const isApiCacheable = API_CACHEABLE.some(path => url.pathname.startsWith(path));
-  if (isApiCacheable && event.request.method === 'GET') {
+  if (isApiCacheable) {
     event.respondWith(
       caches.open(API_CACHE_NAME).then(async (cache) => {
         const cached = await cache.match(event.request);
@@ -52,9 +61,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  if (event.request.method !== 'GET') return;
-
-  if (url.pathname === '/api/events' || url.pathname === '/api/guest/events') return;
+  if (url.pathname.startsWith('/api/')) return;
 
   if (url.origin === self.location.origin) {
     event.respondWith(

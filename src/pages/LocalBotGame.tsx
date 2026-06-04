@@ -11,6 +11,8 @@ import { Spinner } from '../components/ui/Spinner';
 import { playSoundPlace, playSoundMove, playSoundGameEnd, playSoundGameWin, playSoundGameStart } from '../utils/sounds';
 import { useSettings } from '../context/SettingsContext';
 import { awardBotWinAchievement } from '../utils/achievements';
+import { countPiecesOnBoard } from '../utils/boardUtils';
+import { TOTAL_PIECES } from '../types';
 import type { CellOwner, Position } from '../types';
 import { useState, useCallback, useEffect, useRef } from 'react';
 
@@ -29,6 +31,11 @@ export function LocalBotGame() {
   const myColor: CellOwner = 'white';
   const isMyTurn = game?.currentTurn === 'white' && game?.status === 'active';
   const isBotThinking = game?.currentTurn === 'black' && game?.status === 'active';
+
+  const blackOnBoard = game ? countPiecesOnBoard(game.board, 'black') : 0;
+  const whiteOnBoard = game ? countPiecesOnBoard(game.board, 'white') : 0;
+  const blackRemaining = TOTAL_PIECES - blackOnBoard;
+  const whiteRemaining = TOTAL_PIECES - whiteOnBoard;
 
   useEffect(() => {
     if (!game) return;
@@ -165,8 +172,13 @@ export function LocalBotGame() {
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem', marginBottom: '1rem' }}>
             <div>
-              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Black (Bot)</div>
-              <Clock timeMs={clock.black} isActive={game.status === 'active'} isMyTurn={isBotThinking} lastMoveTimestamp={game.lastMoveTimestamp} currentTurn={game.currentTurn} myColor={myColor} playerColor="black" />
+              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
+                Black (Bot)
+                <span style={{ marginLeft: 8, fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+                  {game.phase === 'placement' ? `${blackRemaining} left` : `${blackOnBoard} pcs`}
+                </span>
+              </div>
+              <Clock timeMs={clock.black} isActive={game.status === 'active'} isMyTurn={false} lastMoveTimestamp={game.lastMoveTimestamp} currentTurn={game.currentTurn} myColor={myColor || undefined} playerColor="black" />
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <Button
@@ -179,8 +191,13 @@ export function LocalBotGame() {
               </Button>
             </div>
             <div>
-              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', textAlign: 'right' }}>White (You)</div>
-              <Clock timeMs={clock.white} isActive={game.status === 'active'} isMyTurn={isMyTurn} lastMoveTimestamp={game.lastMoveTimestamp} currentTurn={game.currentTurn} myColor={myColor} playerColor="white" />
+              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', textAlign: 'right' }}>
+                White (You)
+                <span style={{ marginLeft: 8, fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+                  {game.phase === 'placement' ? `${whiteRemaining} left` : `${whiteOnBoard} pcs`}
+                </span>
+              </div>
+              <Clock timeMs={clock.white} isActive={game.status === 'active'} isMyTurn={myColor === 'white' && isMyTurn} lastMoveTimestamp={game.lastMoveTimestamp} currentTurn={game.currentTurn} myColor={myColor || undefined} playerColor="white" />
             </div>
           </div>
 
@@ -220,8 +237,7 @@ export function LocalBotGame() {
             {premove && (
               <span style={{
                 padding: '8px 16px', borderRadius: 'var(--radius-md)',
-                background: 'var(--color-secondary)',
-                color: 'var(--color-dark)',
+                background: 'var(--color-secondary)', color: 'var(--color-dark)',
                 fontSize: '0.8rem', fontWeight: 600,
                 border: '1px solid var(--color-border)',
               }}>
