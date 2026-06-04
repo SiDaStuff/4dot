@@ -646,7 +646,7 @@ async function analyzeGameAndCheckSus(game, state, gameId) {
 }
 
 async function refundRatingsForBannedPlayer(bannedUid) {
-  const games = await getFinishedGames();
+  const games = await getFinishedGames(500);
   const updates = [];
   games.forEach(({ id, game: g }) => {
     if (g.blackPlayer?.uid === bannedUid || g.whitePlayer?.uid === bannedUid) {
@@ -914,7 +914,7 @@ async function isUserBusy(uid) {
   return activeGame ? { busy: true, gameId: activeGame.id } : { busy: false };
 }
 
-async function getFinishedGames() {
+async function getFinishedGames(limit) {
   const gamesById = new Map();
   const activeSnap = await db.ref('activeGames').once('value');
   if (activeSnap.exists()) {
@@ -927,7 +927,9 @@ async function getFinishedGames() {
     });
   }
 
-  const completedSnap = await db.ref('completedGames').once('value');
+  let completedRef = db.ref('completedGames');
+  if (limit) completedRef = completedRef.limitToLast(limit);
+  const completedSnap = await completedRef.once('value');
   if (completedSnap.exists()) {
     completedSnap.forEach(child => {
       if (!gamesById.has(child.key)) {
@@ -1975,19 +1977,19 @@ async function enableFirebaseAccount(uid) {
 
 async function serverPollForSusAndQueuedReview() {
   try {
-    const allUsers = await rtdbGet('users');
-    if (!allUsers) return;
-    for (const [uid, data] of Object.entries(allUsers)) {
-      const susScore = data.susScore || 0;
-      if (susScore >= 100) {
-        await db.ref(`flaggedGames/sus_${uid}_${Date.now()}`).set({
+    const susSnap = await db.ref('users').orderByChild('susScore').startAt(100).limitToFirst(10).once('value');
+    if (susSnap.exists()) {
+      susSnap.forEach(child => {
+        const uid = child.key;
+        const data = child.val();
+        db.ref(`flaggedGames/sus_${uid}_${Date.now()}`).set({
           gameId: `sus_${uid}_${Date.now()}`,
           uid,
           username: data.username || 'Player',
           matchRate: 100,
           totalMoves: 0,
           matchingMoves: 0,
-          reason: `Suspicion score reached ${susScore} (threshold: 100)`,
+          reason: `Suspicion score reached ${data.susScore || 0} (threshold: 100)`,
           susIncrease: 0,
           blackPlayer: null,
           whitePlayer: null,
@@ -1997,30 +1999,33 @@ async function serverPollForSusAndQueuedReview() {
           createdAt: Date.now(),
           status: 'pending',
         });
-      }
+      });
     }
+
+    const recentEnd = Date.now();
+    const recentStart = recentEnd - 24 * 60 * 60 * 1000;
+    const finishedGames = await getFinishedGames(50);
+    const recentUnreviewed = finishedGames.filter(({ id, game: g }) => {
+      if (g.blackPlayer?.uid === 'bot' || g.whitePlayer?.uid === 'bot') return false;
+      if (!g.finishedAt || g.finishedAt < recentStart) return false;
+      return true;
+    });
+
+    if (recentUnreviewed.length === 0) return;
 
     const reviewedSnap = await db.ref('reviewedGames').once('value');
     const reviewed = reviewedSnap.exists() ? new Set(Object.keys(reviewedSnap.val())) : new Set();
 
-    const pending = [];
-    const finishedGames = await getFinishedGames();
-    finishedGames.forEach(({ id, game: g }) => {
-      if (!reviewed.has(id)) {
-        if (g.blackPlayer?.uid === 'bot' || g.whitePlayer?.uid === 'bot') {
-          db.ref(`reviewedGames/${id}`).set(true);
-          return;
-        }
-        pending.push({ id, ...g });
-      }
-    });
+    const toReview = recentUnreviewed.filter(({ id }) => !reviewed.has(id)).slice(0, 3);
 
-    for (const game of pending.slice(0, 5)) {
+    for (const { id, game } of toReview) {
       const humanUid = game.blackPlayer.uid !== 'bot' ? game.blackPlayer.uid : game.whitePlayer.uid;
       const humanColor = game.blackPlayer.uid !== 'bot' ? 'black' : 'white';
-      if (humanUid === 'bot') { await db.ref(`reviewedGames/${game.id}`).set(true); continue; }
+      if (humanUid === 'bot') { await db.ref(`reviewedGames/${id}`).set(true); continue; }
 
       const moves = game.result?.moves || [];
+      if (!moves || moves.length < 4) { await db.ref(`reviewedGames/${id}`).set(true); continue; }
+
       const simState = createInitialGameState();
       let matchingMoves = 0;
       let totalMoves = 0;
@@ -2032,7 +2037,7 @@ async function serverPollForSusAndQueuedReview() {
           continue;
         }
         totalMoves++;
-        const engineMove = engineFindBestMoveForPlayer(simState, humanColor, 10);
+        const engineMove = engineFindBestMoveForPlayer(simState, humanColor, 6);
         if (engineMove) {
           const playerFrom = move.from ? `${move.from.row},${move.from.col}` : null;
           const playerTo = `${move.to.row},${move.to.col}`;
@@ -2060,8 +2065,8 @@ async function serverPollForSusAndQueuedReview() {
             const newSus = currentSus + susIncrease;
             await db.ref(`users/${humanUid}`).update({ susScore: newSus });
 
-            await db.ref(`flaggedGames/${game.id}`).set({
-              gameId: game.id,
+            await db.ref(`flaggedGames/${id}`).set({
+              gameId: id,
               uid: humanUid,
               username: userSnap.val().username || 'Player',
               matchRate: Math.round(matchRate * 100),
@@ -2080,7 +2085,7 @@ async function serverPollForSusAndQueuedReview() {
           }
         }
       }
-      await db.ref(`reviewedGames/${game.id}`).set(true);
+      await db.ref(`reviewedGames/${id}`).set(true);
     }
   } catch (err) {
     console.error('Server poll error:', err.message);
