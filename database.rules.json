@@ -1,0 +1,81 @@
+{
+  "rules": {
+    "users": {
+      ".read": false,
+      ".write": false,
+      ".indexOn": ["username", "online"],
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        ".write": "auth != null && auth.uid == $uid"
+      }
+    },
+    "usernames": {
+      ".read": "auth != null",
+      ".write": false
+    },
+    "friendRequests": {
+      ".read": false,
+      ".write": false,
+      ".indexOn": ["from", "to", "status"],
+      "$requestId": {
+        ".read": "auth != null && (data.child('from').val() == auth.uid || data.child('to').val() == auth.uid)",
+        ".write": "auth != null && (newData.child('from').val() == auth.uid || newData.child('to').val() == auth.uid)"
+      }
+    },
+    "queue": {
+      ".read": "auth != null",
+      ".write": false,
+      ".indexOn": ["mode", "joinedAt"],
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid == $uid"
+      }
+    },
+    "activeGames": {
+      ".read": false,
+      ".write": false,
+      ".indexOn": ["status"],
+      "$gameId": {
+        ".read": "auth != null",
+        ".write": false
+      }
+    },
+    "completedGames": {
+      ".read": "auth != null",
+      ".write": false
+    },
+    "notifications": {
+      ".read": false,
+      ".write": false,
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        ".write": "auth != null && auth.uid == $uid",
+        ".indexOn": ["createdAt"]
+      }
+    },
+    "challenges": {
+      ".read": false,
+      ".write": false,
+      "$code": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    },
+    "bans": {
+      ".read": false,
+      ".write": false,
+      "$uid": {
+        ".read": "auth != null",
+        ".write": false
+      }
+    },
+    "moveHistory": {
+      ".read": "auth != null",
+      ".write": false
+    },
+    "reviewedGames": {
+      ".read": false,
+      ".write": false
+    }
+  }
+}

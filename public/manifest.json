@@ -1,0 +1,26 @@
+{
+  "name": "4Dot - Strategic Multiplayer Game",
+  "short_name": "4Dot",
+  "description": "A strategic multiplayer piece game with Glicko-2 rated matchmaking",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FFFFFF",
+  "theme_color": "#4C956C",
+  "orientation": "portrait-primary",
+  "categories": ["games", "entertainment"],
+  "icons": [
+    {
+      "src": "/icons/icon-192x192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512x512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "prefer_related_applications": false
+}
