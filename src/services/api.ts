@@ -83,4 +83,18 @@ export function createEventSource(guestUid?: string): EventSource {
   return new EventSource(`${API_URL}/api/events?token=${encodeURIComponent(idToken)}`);
 }
 
+export async function createAuthenticatedEventSource(guestUid?: string): Promise<EventSource> {
+  if (guestUid) {
+    return new EventSource(`${API_URL}/api/guest/events?uid=${encodeURIComponent(guestUid)}`);
+  }
+
+  if (auth.currentUser) {
+    const token = await auth.currentUser.getIdToken();
+    setAuthToken(token);
+    return new EventSource(`${API_URL}/api/events?token=${encodeURIComponent(token)}`);
+  }
+
+  return new EventSource(`${API_URL}/api/guest/events?uid=anonymous`);
+}
+
 export { API_URL };

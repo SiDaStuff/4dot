@@ -93,8 +93,9 @@ export function getWinLine(board: CellOwner[][], player: CellOwner): Position[] 
 }
 
 export function countPiecesOnBoard(board: CellOwner[][], player: CellOwner): number {
+  if (!Array.isArray(board)) return 0;
   return board.reduce((sum, row) =>
-    sum + row.reduce((rowSum, cell) => rowSum + (cell === player ? 1 : 0), 0), 0);
+    sum + (Array.isArray(row) ? row.reduce((rowSum, cell) => rowSum + (cell === player ? 1 : 0), 0) : 0), 0);
 }
 
 export function isValidKingMove(from: Position, to: Position): boolean {

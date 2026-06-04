@@ -116,7 +116,12 @@ app.use(cors({
   },
   credentials: true,
 }));
-app.use(compression());
+app.use(compression({
+  filter: (req, res) => {
+    if (req.path === '/api/events' || req.path === '/api/guest/events') return false;
+    return compression.filter(req, res);
+  },
+}));
 app.use(express.json());
 
 const publicLimiter = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests', retryAfter: 60 } });
@@ -834,6 +839,28 @@ function sendSSE(uid, data) {
 }
 function broadcastToGame(game, data) { sendSSE(game.blackPlayer.uid, data); sendSSE(game.whitePlayer.uid, data); }
 
+async function findActiveGameForUser(uid) {
+  if (!uid) return null;
+  const snap = await db.ref('activeGames').once('value');
+  if (!snap.exists()) return null;
+  let found = null;
+  snap.forEach(child => {
+    const game = normalizeArrays(child.val());
+    const isPlayer = game?.blackPlayer?.uid === uid || game?.whitePlayer?.uid === uid;
+    if (isPlayer && game.status === 'active') {
+      found = { id: child.key, ...game };
+      return true;
+    }
+    return false;
+  });
+  return found;
+}
+
+async function isUserBusy(uid) {
+  const activeGame = await findActiveGameForUser(uid);
+  return activeGame ? { busy: true, gameId: activeGame.id } : { busy: false };
+}
+
 function clearClockTimers(gameId) {
   const timers = clockTimers.get(gameId);
   if (timers) {
@@ -1153,6 +1180,10 @@ app.post('/api/friends/duel-request', async (req, res) => {
   if (!toUid) return res.status(400).json({ error: 'Target UID required' });
   if (toUid === fromUid) return res.status(400).json({ error: 'Cannot duel yourself' });
 
+  const [senderBusy, targetBusy] = await Promise.all([isUserBusy(fromUid), isUserBusy(toUid)]);
+  if (senderBusy.busy) return res.status(409).json({ error: 'You are already in a match', gameId: senderBusy.gameId });
+  if (targetBusy.busy) return res.status(409).json({ error: 'That player is already in a match', gameId: targetBusy.gameId });
+
   const cooldownKey = `${fromUid}_${toUid}`;
   const lastDuel = duelCooldowns.get(cooldownKey);
   if (lastDuel && Date.now() - lastDuel < 30000) {
@@ -1197,6 +1228,9 @@ app.post('/api/matchmaking/join', async (req, res) => {
   const data = await rtdbGet(`users/${req.user.uid}`);
   if (!data) return res.status(404).json({ error: 'User not found' });
 
+  const busy = await isUserBusy(req.user.uid);
+  if (busy.busy) return res.status(409).json({ error: 'You are already in a match', gameId: busy.gameId });
+
   const existingSnap = await db.ref(`queue/${req.user.uid}`).once('value');
   if (existingSnap.exists()) {
     return res.json({ success: true, alreadyInQueue: true });
@@ -1222,6 +1256,13 @@ async function tryMatchmaking(uid) {
       return;
     }
     const opponent = opponents[0];
+
+    const [myBusy, opponentBusy] = await Promise.all([isUserBusy(uid), isUserBusy(opponent.uid)]);
+    if (myBusy.busy || opponentBusy.busy) {
+      if (myBusy.busy) await db.ref(`queue/${uid}`).remove();
+      if (opponentBusy.busy) await db.ref(`queue/${opponent.uid}`).remove();
+      return;
+    }
 
     const removed = await Promise.all([
       db.ref(`queue/${uid}`).transaction(current => {
@@ -1267,6 +1308,13 @@ setInterval(async () => {
         if (a.mode !== b.mode) continue;
         if (Math.abs(a.rating - b.rating) > Math.max(a.range, b.range)) continue;
 
+        const [aBusy, bBusy] = await Promise.all([isUserBusy(a.uid), isUserBusy(b.uid)]);
+        if (aBusy.busy || bBusy.busy) {
+          if (aBusy.busy) await db.ref(`queue/${a.uid}`).remove();
+          if (bBusy.busy) await db.ref(`queue/${b.uid}`).remove();
+          continue;
+        }
+
         const removedA = await db.ref(`queue/${a.uid}`).transaction(current => { if (current) return null; return current; });
         const removedB = await db.ref(`queue/${b.uid}`).transaction(current => { if (current) return null; return current; });
         if (!removedA.committed || !removedB.committed) continue;
@@ -1303,6 +1351,10 @@ app.post('/api/game/create-duel', async (req, res) => {
   
   if (!opponentUid) return res.status(400).json({ error: 'Opponent UID required' });
   if (opponentUid === fromUid) return res.status(400).json({ error: 'Cannot duel yourself' });
+
+  const [senderBusy, opponentBusy] = await Promise.all([isUserBusy(fromUid), isUserBusy(opponentUid)]);
+  if (senderBusy.busy) return res.status(409).json({ error: 'You are already in a match', gameId: senderBusy.gameId });
+  if (opponentBusy.busy) return res.status(409).json({ error: 'That player is already in a match', gameId: opponentBusy.gameId });
   
   // Check if they're friends
   const allRequests = await rtdbGet('friendRequests');
@@ -1935,6 +1987,10 @@ app.post('/api/challenge/create', async (req, res) => {
   const fromUid = req.user.uid;
   const fromData = await rtdbGet(`users/${fromUid}`);
   if (!fromData) return res.status(404).json({ error: 'User not found' });
+
+  const busy = await isUserBusy(fromUid);
+  if (busy.busy) return res.status(409).json({ error: 'You are already in a match', gameId: busy.gameId });
+
   const code = crypto.randomBytes(6).toString('base64url');
   await db.ref(`challenges/${code}`).set({
     fromUid,
@@ -1988,6 +2044,14 @@ app.post('/api/challenge/accept/:code', async (req, res) => {
   }
 
   if (toUid === challenge.fromUid) return res.status(400).json({ error: 'Cannot accept your own challenge' });
+
+  const creatorBusy = await isUserBusy(challenge.fromUid);
+  if (creatorBusy.busy) return res.status(409).json({ error: 'Challenge creator is already in a match', gameId: creatorBusy.gameId });
+
+  if (!toUid.startsWith('guest_')) {
+    const accepterBusy = await isUserBusy(toUid);
+    if (accepterBusy.busy) return res.status(409).json({ error: 'You are already in a match', gameId: accepterBusy.gameId });
+  }
 
   await db.ref(`challenges/${req.params.code}`).remove();
 

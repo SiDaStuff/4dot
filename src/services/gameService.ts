@@ -1,6 +1,8 @@
 import { api, createEventSource } from './api';
 import type { Game } from '../types';
 
+const BOARD_SIZE = 6;
+
 function normalizeArrays(obj: any): any {
   if (obj === null || obj === undefined) return obj;
   if (Array.isArray(obj)) return obj.map(normalizeArrays);
@@ -29,10 +31,17 @@ function decodeBoard(board: any): any {
   });
 }
 
-function normalizeGame(game: any): Game {
+function isValidBoard(board: any): boolean {
+  return Array.isArray(board)
+    && board.length === BOARD_SIZE
+    && board.every((row) => Array.isArray(row) && row.length === BOARD_SIZE);
+}
+
+function normalizeGame(game: any): Game | null {
   if (!game) return game;
   const normalized = normalizeArrays(game);
   if (normalized.board) normalized.board = decodeBoard(normalized.board);
+  if (!isValidBoard(normalized.board)) return null;
   return normalized;
 }
 

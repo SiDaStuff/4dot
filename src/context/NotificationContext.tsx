@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useAuth } from './AuthContext';
-import { createEventSource, api } from '../services/api';
+import { createAuthenticatedEventSource, api } from '../services/api';
 import { showToast } from '../components/ui/Toast';
 import { useNavigate } from 'react-router-dom';
 
@@ -83,8 +83,16 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
   useEffect(() => {
     if (!user) { setNotifications([]); return; }
-    const es = createEventSource();
-    es.onmessage = (event) => {
+    let active = true;
+    let es: EventSource | null = null;
+
+    createAuthenticatedEventSource().then((eventSource) => {
+      if (!active) {
+        eventSource.close();
+        return;
+      }
+      es = eventSource;
+      es.onmessage = (event) => {
       const data = JSON.parse(event.data);
 
       const listeners = sseListenersRef.current.get(data.type);
@@ -145,8 +153,13 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       if (data.type === 'match_found' && data.gameId) {
         navigateRef.current(`/game/${data.gameId}`);
       }
+      };
+    }).catch(() => {});
+
+    return () => {
+      active = false;
+      if (es) es.close();
     };
-    return () => es.close();
   }, [user, addNotification]);
 
   const unreadCount = useMemo(() => notifications.filter((n) => !n.read).length, [notifications]);
