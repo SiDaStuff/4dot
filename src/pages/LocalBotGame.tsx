@@ -166,7 +166,7 @@ export function LocalBotGame() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem', marginBottom: '1rem' }}>
             <div>
               <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Black (Bot)</div>
-              <Clock timeMs={clock.black} isActive={game.status === 'active'} isMyTurn={myColor === 'black' && isMyTurn} lastMoveTimestamp={game.lastMoveTimestamp} currentTurn={game.currentTurn} myColor={myColor || undefined} />
+              <Clock timeMs={clock.black} isActive={game.status === 'active'} isMyTurn={isBotThinking} lastMoveTimestamp={game.lastMoveTimestamp} currentTurn={game.currentTurn} myColor={myColor} playerColor="black" />
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <Button
@@ -180,7 +180,7 @@ export function LocalBotGame() {
             </div>
             <div>
               <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', textAlign: 'right' }}>White (You)</div>
-              <Clock timeMs={clock.white} isActive={game.status === 'active'} isMyTurn={myColor === 'white' && isMyTurn} lastMoveTimestamp={game.lastMoveTimestamp} currentTurn={game.currentTurn} myColor={myColor || undefined} />
+              <Clock timeMs={clock.white} isActive={game.status === 'active'} isMyTurn={isMyTurn} lastMoveTimestamp={game.lastMoveTimestamp} currentTurn={game.currentTurn} myColor={myColor} playerColor="white" />
             </div>
           </div>
 

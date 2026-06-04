@@ -7,6 +7,7 @@ interface ClockProps {
   lastMoveTimestamp?: number;
   currentTurn?: string;
   myColor?: string;
+  playerColor?: 'black' | 'white';
 }
 
 function formatTime(ms: number): string {
@@ -16,7 +17,7 @@ function formatTime(ms: number): string {
   return `${min}:${sec.toString().padStart(2, '0')}`;
 }
 
-export function Clock({ timeMs, isActive, isMyTurn, lastMoveTimestamp, currentTurn, myColor }: ClockProps) {
+export function Clock({ timeMs, isActive, isMyTurn, lastMoveTimestamp, currentTurn, myColor, playerColor }: ClockProps) {
   const [displayMs, setDisplayMs] = useState(timeMs);
   const rafRef = useRef<number>(0);
   const baseTimeRef = useRef(timeMs);
@@ -34,9 +35,11 @@ export function Clock({ timeMs, isActive, isMyTurn, lastMoveTimestamp, currentTu
       return;
     }
 
+    const isThisPlayerTurn = playerColor === currentTurn;
+
     const tick = () => {
-      const elapsed = Date.now() - baseTsRef.current;
-      if (isMyTurn) {
+      if (isThisPlayerTurn) {
+        const elapsed = Date.now() - baseTsRef.current;
         setDisplayMs(Math.max(0, baseTimeRef.current - elapsed));
       } else {
         setDisplayMs(baseTimeRef.current);
@@ -48,7 +51,7 @@ export function Clock({ timeMs, isActive, isMyTurn, lastMoveTimestamp, currentTu
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [isActive, isMyTurn, currentTurn, myColor]);
+  }, [isActive, isMyTurn, currentTurn, myColor, playerColor]);
 
   const danger = displayMs < 30000;
 
@@ -67,7 +70,7 @@ export function Clock({ timeMs, isActive, isMyTurn, lastMoveTimestamp, currentTu
           ? (danger ? 'var(--color-danger)' : 'var(--color-border)')
           : 'var(--color-border)'
       }`,
-      color: danger ? 'var(--color-danger)' : 'var(--color-text)',
+      color: danger && isActive && isMyTurn ? 'var(--color-danger)' : 'var(--color-text)',
       transition: 'background 0.3s, border-color 0.3s, color 0.3s',
       minWidth: 80,
       textAlign: 'center',

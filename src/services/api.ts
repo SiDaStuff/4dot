@@ -10,7 +10,7 @@ export function setAuthToken(token: string | null) {
   idToken = token;
 }
 
-async function request(path: string, options: FetchInit = {}): Promise<any> {
+async function request(path: string, options: RequestInit = {}): Promise<any> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),

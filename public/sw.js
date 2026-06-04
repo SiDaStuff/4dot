@@ -54,6 +54,8 @@ self.addEventListener('fetch', (event) => {
 
   if (event.request.method !== 'GET') return;
 
+  if (url.pathname === '/api/events' || url.pathname === '/api/guest/events') return;
+
   if (url.origin === self.location.origin) {
     event.respondWith(
       caches.match(event.request).then((response) => {
