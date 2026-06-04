@@ -38,7 +38,7 @@ export const AnalysisBoard = React.memo(function AnalysisBoard({
   flipped = false,
   interactive = true,
 }: AnalysisBoardProps) {
-  const size = typeof window !== 'undefined' && window.innerWidth < 400 ? 48 : 56;
+  const size = 56;
 
   const highlightSet = useMemo(() => {
     const set = new Map<string, string>();
