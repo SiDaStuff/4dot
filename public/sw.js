@@ -1,4 +1,4 @@
-const CACHE_NAME = '4dot-cache-v4';
+const CACHE_NAME = '4dot-cache-v5';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -8,7 +8,7 @@ const STATIC_ASSETS = [
   '/icons/icon-512x512.svg',
 ];
 
-const API_CACHE_NAME = '4dot-api-cache-v2';
+const API_CACHE_NAME = '4dot-api-cache-v3';
 const API_CACHEABLE = ['/api/leaderboard', '/api/active-games'];
 const API_TTL = 30000;
 
@@ -31,6 +31,8 @@ self.addEventListener('fetch', (event) => {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
 
   if (NEVER_CACHE.some(path => url.pathname.startsWith(path))) return;
+
+  if (url.origin !== self.location.origin) return;
 
   const isApiCacheable = API_CACHEABLE.some(path => url.pathname.startsWith(path));
   if (isApiCacheable) {
@@ -64,35 +66,25 @@ self.addEventListener('fetch', (event) => {
 
   if (url.pathname.startsWith('/api/')) return;
 
-  if (url.origin === self.location.origin) {
-    event.respondWith(
-      caches.match(event.request).then((response) => {
-        if (response) return response;
-        return fetch(event.request).then((networkResponse) => {
-          if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
-            return networkResponse;
-          }
+  event.respondWith(
+    fetch(event.request)
+      .then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
           const responseToCache = networkResponse.clone();
           caches.open(CACHE_NAME).then((cache) => {
             cache.put(event.request, responseToCache);
           });
-          return networkResponse;
-        }).catch(() => {
-          if (event.request.destination === 'document') {
-            return caches.match('/index.html');
-          }
-          return new Response('', { status: 504, statusText: 'Offline' });
+        }
+        return networkResponse;
+      })
+      .catch(() => {
+        if (event.request.mode === 'navigate' || event.request.destination === 'document') {
+          return caches.match('/index.html');
+        }
+        return caches.match(event.request).then((cached) => {
+          return cached || new Response('', { status: 504, statusText: 'Offline' });
         });
       })
-    );
-    return;
-  }
-
-  event.respondWith(
-    fetch(event.request).catch(async () => {
-      const cached = await caches.match(event.request);
-      return cached || new Response('', { status: 504, statusText: 'Offline' });
-    })
   );
 });
 

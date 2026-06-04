@@ -125,7 +125,7 @@ app.use(compression({
 }));
 app.use(express.json());
 
-const rateLimitDefaults = { standardHeaders: true, legacyHeaders: false, validate: { trustProxy: false } };
+const rateLimitDefaults = { standardHeaders: true, legacyHeaders: false, validate: { trustProxy: true } };
 const publicLimiter = rateLimit({ ...rateLimitDefaults, windowMs: 60 * 1000, max: 120, message: { error: 'Too many requests', retryAfter: 60 } });
 const authLimiter = rateLimit({ ...rateLimitDefaults, windowMs: 60 * 1000, max: 300, message: { error: 'Too many requests', retryAfter: 60 } });
 const moveLimiter = rateLimit({ ...rateLimitDefaults, windowMs: 60 * 1000, max: 600, message: { error: 'Too many requests', retryAfter: 60 } });
