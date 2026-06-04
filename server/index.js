@@ -102,6 +102,7 @@ async function rtdbGetChild(path, key, value) {
 }
 
 const app = express();
+app.set('trust proxy', 1);
 const allowedOrigins = [
   'http://localhost:3000','http://127.0.0.1:3000',
   'http://localhost:5173','http://127.0.0.1:5173',
@@ -641,11 +642,9 @@ async function analyzeGameAndCheckSus(game, state, gameId) {
 }
 
 async function refundRatingsForBannedPlayer(bannedUid) {
-  const snap = await db.ref('completedGames').once('value');
-  if (!snap.exists()) return;
+  const games = await getFinishedGames();
   const updates = [];
-  snap.forEach(child => {
-    const g = child.val();
+  games.forEach(({ id, game: g }) => {
     if (g.blackPlayer?.uid === bannedUid || g.whitePlayer?.uid === bannedUid) {
       const opponentUid = g.blackPlayer?.uid === bannedUid ? g.whitePlayer?.uid : g.blackPlayer?.uid;
       if (opponentUid && g.result) {
@@ -706,12 +705,20 @@ async function finalizeGame(game, gameId, state, clock, move, gameResult) {
     await Promise.all([db.ref(`users/${game.blackPlayer.uid}`).update(blackUpdate), db.ref(`users/${game.whitePlayer.uid}`).update(whiteUpdate)]);
   }
 
-  await db.ref(`completedGames/${gameId}`).set(rtdbSafe({
-    id: gameId, blackPlayer: game.blackPlayer, whitePlayer: game.whitePlayer, mode: game.mode,
-    result: { ...gameResult, moves: state.moves || [] }, status: 'finished', finishedAt: Date.now(),
+  const finishedAt = Date.now();
+  await gameRef.update(encodeGameForStorage({
+    board: state.board,
+    currentTurn: state.currentTurn,
+    phase: 'finished',
+    moves: state.moves || [],
+    positionHistory: state.positionHistory || [],
+    clock,
+    lastMoveTimestamp: finishedAt,
+    status: 'finished',
+    completed: true,
+    result: { ...gameResult, moves: state.moves || [] },
+    finishedAt,
   }));
-
-  await gameRef.remove();
 }
 
 function calculateNewRating(state, opponents, tau = 0.6) {
@@ -859,6 +866,42 @@ async function findActiveGameForUser(uid) {
 async function isUserBusy(uid) {
   const activeGame = await findActiveGameForUser(uid);
   return activeGame ? { busy: true, gameId: activeGame.id } : { busy: false };
+}
+
+async function getFinishedGames() {
+  const gamesById = new Map();
+  const activeSnap = await db.ref('activeGames').once('value');
+  if (activeSnap.exists()) {
+    activeSnap.forEach(child => {
+      const game = normalizeArrays(child.val());
+      if (game.status === 'finished' || game.completed) {
+        gamesById.set(child.key, { id: child.key, game });
+      }
+      return false;
+    });
+  }
+
+  const completedSnap = await db.ref('completedGames').once('value');
+  if (completedSnap.exists()) {
+    completedSnap.forEach(child => {
+      if (!gamesById.has(child.key)) {
+        gamesById.set(child.key, { id: child.key, game: normalizeArrays(child.val()) });
+      }
+      return false;
+    });
+  }
+
+  return Array.from(gamesById.values());
+}
+
+async function getFinishedGame(gameId) {
+  const activeSnap = await db.ref(`activeGames/${gameId}`).once('value');
+  if (activeSnap.exists()) {
+    const game = normalizeArrays(activeSnap.val());
+    if (game.status === 'finished' || game.completed) return game;
+  }
+  const completedSnap = await db.ref(`completedGames/${gameId}`).once('value');
+  return completedSnap.exists() ? normalizeArrays(completedSnap.val()) : null;
 }
 
 function clearClockTimers(gameId) {
@@ -1558,7 +1601,11 @@ app.get('/api/active-games', async (req, res) => {
 
 app.get('/api/game/:gameId', async (req, res) => {
   const snap = await db.ref(`activeGames/${req.params.gameId}`).once('value');
-  if (!snap.exists()) { const completed = await rtdbGet(`completedGames/${req.params.gameId}`); if (completed) return res.json(completed); return res.status(404).json({ error: 'Game not found' }); }
+  if (!snap.exists()) {
+    const completed = await getFinishedGame(req.params.gameId);
+    if (completed) return res.json(completed);
+    return res.status(404).json({ error: 'Game not found' });
+  }
   res.json(decodeGameFromStorage(snap.val()));
 });
 
@@ -1762,7 +1809,7 @@ app.delete('/api/admin/cleanup-active-games', async (req, res) => {
   const snap = await db.ref('activeGames').once('value');
   if (!snap.exists()) return res.json({ cleaned: 0 });
   let count = 0; const deletes = [];
-  snap.forEach(child => { const g = child.val(); if (g.status === 'finished' || !g.board) { deletes.push(db.ref(`activeGames/${child.key}`).remove()); count++; } });
+  snap.forEach(child => { const g = child.val(); if (!g.board) { deletes.push(db.ref(`activeGames/${child.key}`).remove()); count++; } });
   await Promise.all(deletes); res.json({ cleaned: count });
 });
 
@@ -1829,20 +1876,18 @@ async function serverPollForSusAndQueuedReview() {
       }
     }
 
-    const completedSnap = await db.ref('completedGames').once('value');
-    if (!completedSnap.exists()) return;
     const reviewedSnap = await db.ref('reviewedGames').once('value');
     const reviewed = reviewedSnap.exists() ? new Set(Object.keys(reviewedSnap.val())) : new Set();
 
     const pending = [];
-  completedSnap.forEach(child => {
-    if (!reviewed.has(child.key)) {
-      const g = child.val();
+  const finishedGames = await getFinishedGames();
+  finishedGames.forEach(({ id, game: g }) => {
+    if (!reviewed.has(id)) {
       if (g.blackPlayer?.uid === 'bot' || g.whitePlayer?.uid === 'bot') {
-        db.ref(`reviewedGames/${child.key}`).set(true);
+        db.ref(`reviewedGames/${id}`).set(true);
         return;
       }
-      pending.push({ id: child.key, ...g });
+      pending.push({ id, ...g });
     }
   });
 
@@ -1916,27 +1961,23 @@ async function serverPollForSusAndQueuedReview() {
 async function cleanupOldMoveHistory() {
   try {
     const twoMonthsAgo = Date.now() - (60 * 24 * 60 * 60 * 1000); // 60 days in milliseconds
-    const completedSnap = await db.ref('completedGames').once('value');
-    if (!completedSnap.exists()) return;
+    const finishedGames = await getFinishedGames();
     
     const updates = {};
-    completedSnap.forEach(child => {
-      const game = child.val();
+    finishedGames.forEach(({ id, game }) => {
       if (game.finishedAt && game.finishedAt < twoMonthsAgo) {
         // Archive to moveHistory collection
         if (game.result && game.result.moves) {
           const archived = {
-            gameId: child.key,
+            gameId: id,
             blackUid: game.blackPlayer?.uid,
             whiteUid: game.whitePlayer?.uid,
             moves: game.result.moves,
             finishedAt: game.finishedAt,
             archivedAt: Date.now(),
           };
-          updates[`moveHistory/${child.key}`] = archived;
+          updates[`moveHistory/${id}`] = archived;
         }
-        // Remove from completedGames after archiving
-        updates[`completedGames/${child.key}`] = null;
       }
     });
     
@@ -2120,9 +2161,8 @@ app.post('/api/game/:gameId/draw-reject', async (req, res) => {
 
 app.post('/api/game/:gameId/rematch', async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Authentication required' });
-  const snap = await db.ref(`completedGames/${req.params.gameId}`).once('value');
-  if (!snap.exists()) return res.status(404).json({ error: 'Game not found' });
-  const oldGame = normalizeArrays(snap.val());
+  const oldGame = await getFinishedGame(req.params.gameId);
+  if (!oldGame) return res.status(404).json({ error: 'Game not found' });
   const opponentUid = oldGame.blackPlayer.uid === req.user.uid ? oldGame.whitePlayer.uid : oldGame.blackPlayer.uid;
   const opponentData = await rtdbGet(`users/${opponentUid}`);
   if (!opponentData) return res.status(404).json({ error: 'Opponent not found' });
@@ -2154,15 +2194,14 @@ app.get('/api/game-history', async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 20, 50);
   const lastKey = req.query.lastKey || null;
   const uid = req.user.uid;
-  const snap = await db.ref('completedGames').once('value');
-  if (!snap.exists()) return res.json({ games: [], hasMore: false });
+  const finishedGames = await getFinishedGames();
+  if (finishedGames.length === 0) return res.json({ games: [], hasMore: false });
   const games = [];
   let pastLastKey = !lastKey;
-  snap.forEach(child => {
-    const g = normalizeArrays(child.val());
+  finishedGames.forEach(({ id, game: g }) => {
     if (g.blackPlayer?.uid !== uid && g.whitePlayer?.uid !== uid) return;
     if (!pastLastKey) {
-      if (child.key === lastKey) pastLastKey = true;
+      if (id === lastKey) pastLastKey = true;
       return;
     }
     const isBlack = g.blackPlayer?.uid === uid;
@@ -2174,7 +2213,7 @@ app.get('/api/game-history', async (req, res) => {
     else myResult = 'loss';
     const ratingChange = isBlack ? (result?.ratingChangeBlack || 0) : (result?.ratingChangeWhite || 0);
     games.push({
-      id: child.key,
+      id,
       opponent: opponent?.username || 'Player',
       opponentUid: opponent?.uid || '',
       result: myResult,
@@ -2193,11 +2232,10 @@ app.get('/api/opponent-stats/:opponentUid', async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Authentication required' });
   const uid = req.user.uid;
   const opponentUid = req.params.opponentUid;
-  const snap = await db.ref('completedGames').once('value');
+  const finishedGames = await getFinishedGames();
   let wins = 0, losses = 0, draws = 0;
-  if (snap.exists()) {
-    snap.forEach(child => {
-      const g = normalizeArrays(child.val());
+  if (finishedGames.length > 0) {
+    finishedGames.forEach(({ game: g }) => {
       if ((g.blackPlayer?.uid !== uid || g.whitePlayer?.uid !== opponentUid) &&
           (g.whitePlayer?.uid !== uid || g.blackPlayer?.uid !== opponentUid)) return;
       const isBlack = g.blackPlayer?.uid === uid;
@@ -2213,12 +2251,11 @@ app.get('/api/opponent-stats/:opponentUid', async (req, res) => {
 app.get('/api/rating-history', async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Authentication required' });
   const uid = req.user.uid;
-  const snap = await db.ref('completedGames').once('value');
+  const finishedGames = await getFinishedGames();
   const history = [];
-  if (snap.exists()) {
+  if (finishedGames.length > 0) {
     const entries = [];
-    snap.forEach(child => {
-      const g = normalizeArrays(child.val());
+    finishedGames.forEach(({ game: g }) => {
       if (g.blackPlayer?.uid !== uid && g.whitePlayer?.uid !== uid) return;
       const isBlack = g.blackPlayer?.uid === uid;
       const rating = isBlack ? g.result?.blackRating : g.result?.whiteRating;
@@ -2237,11 +2274,10 @@ app.get('/api/rating-history', async (req, res) => {
 app.get('/api/activity-feed', async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Authentication required' });
   const uid = req.user.uid;
-  const snap = await db.ref('completedGames').once('value');
+  const finishedGames = await getFinishedGames();
   const activities = [];
-  if (snap.exists()) {
-    snap.forEach(child => {
-      const g = normalizeArrays(child.val());
+  if (finishedGames.length > 0) {
+    finishedGames.forEach(({ id, game: g }) => {
       if (g.blackPlayer?.uid !== uid && g.whitePlayer?.uid !== uid) return;
       const isBlack = g.blackPlayer?.uid === uid;
       const opponent = isBlack ? g.whitePlayer : g.blackPlayer;
@@ -2252,7 +2288,7 @@ app.get('/api/activity-feed', async (req, res) => {
       else myResult = 'loss';
       const ratingChange = isBlack ? (result?.ratingChangeBlack || 0) : (result?.ratingChangeWhite || 0);
       activities.push({
-        id: child.key,
+        id,
         type: myResult,
         message: `${myResult === 'win' ? 'Won' : myResult === 'loss' ? 'Lost' : 'Drew'} vs ${opponent?.username || 'Player'}`,
         timestamp: g.finishedAt || 0,
@@ -2269,11 +2305,10 @@ app.get('/api/activity-feed', async (req, res) => {
 app.get('/api/leaderboard/weekly', async (req, res) => {
   const now = Date.now();
   const weekStart = now - (7 * 24 * 60 * 60 * 1000);
-  const snap = await db.ref('completedGames').once('value');
+  const finishedGames = await getFinishedGames();
   const weekly = {};
-  if (snap.exists()) {
-    snap.forEach(child => {
-      const g = normalizeArrays(child.val());
+  if (finishedGames.length > 0) {
+    finishedGames.forEach(({ game: g }) => {
       if (!g.finishedAt || g.finishedAt < weekStart) return;
       [g.blackPlayer, g.whitePlayer].forEach(p => {
         if (!weekly[p.uid]) weekly[p.uid] = { uid: p.uid, username: p.username, rating: p.rating || 1500, wins: 0, losses: 0, draws: 0 };
@@ -2290,11 +2325,10 @@ app.get('/api/leaderboard/weekly', async (req, res) => {
 app.get('/api/leaderboard/monthly', async (req, res) => {
   const now = Date.now();
   const monthStart = now - (30 * 24 * 60 * 60 * 1000);
-  const snap = await db.ref('completedGames').once('value');
+  const finishedGames = await getFinishedGames();
   const monthly = {};
-  if (snap.exists()) {
-    snap.forEach(child => {
-      const g = normalizeArrays(child.val());
+  if (finishedGames.length > 0) {
+    finishedGames.forEach(({ game: g }) => {
       if (!g.finishedAt || g.finishedAt < monthStart) return;
       [g.blackPlayer, g.whitePlayer].forEach(p => {
         if (!monthly[p.uid]) monthly[p.uid] = { uid: p.uid, username: p.username, rating: p.rating || 1500, wins: 0, losses: 0, draws: 0 };

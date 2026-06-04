@@ -5,6 +5,7 @@ import { Spinner } from '../components/ui/Spinner';
 import { Button } from '../components/ui/Button';
 import { useMatchmaking } from '../hooks/useMatchmaking';
 import { useAuth } from '../context/AuthContext';
+import { useSSEListener } from '../context/NotificationContext';
 
 export function Matchmaking() {
   const { mode } = useParams<{ mode: string }>();
@@ -14,6 +15,10 @@ export function Matchmaking() {
   const { searching, queueSize, startSearch, cancelSearch } = useMatchmaking();
   const [elapsed, setElapsed] = useState(0);
   const [started, setStarted] = useState(false);
+
+  useSSEListener('match_found', (data) => {
+    if (data.gameId) navigate(`/game/${data.gameId}`);
+  });
 
   useEffect(() => {
     if (!started && user) {
