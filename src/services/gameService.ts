@@ -188,7 +188,7 @@ export function listenToGame(gameId: string, callback: (game: Game | null) => vo
   const startPolling = () => {
     if (pollingActive) return;
     pollingActive = true;
-    pollTimer = window.setInterval(fetchGame, 5000);
+    pollTimer = window.setInterval(fetchGame, 15000);
   };
 
   const stopPolling = () => {

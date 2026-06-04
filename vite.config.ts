@@ -6,14 +6,21 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    minify: 'esbuild',
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: ['react', 'react-dom', 'react-router-dom'],
-          firebase: ['firebase/app', 'firebase/auth', 'firebase/database'],
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('react-dom') || id.includes('react/')) return 'vendor';
+            if (id.includes('react-router-dom')) return 'router';
+            if (id.includes('firebase')) return 'firebase';
+          }
         },
       },
     },
+    cssMinify: true,
+    chunkSizeWarningLimit: 600,
+    reportCompressedSize: false,
   },
   server: {
     host: '0.0.0.0',

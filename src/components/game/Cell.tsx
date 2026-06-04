@@ -17,6 +17,8 @@ interface CellProps {
   onClick: () => void;
 }
 
+const CELL_SIZE = 56;
+
 export const Cell = React.memo(function Cell({
   value,
   isWinCell,
@@ -30,8 +32,6 @@ export const Cell = React.memo(function Cell({
   isPremoveTo,
   onClick,
 }: CellProps) {
-  const size = typeof window !== 'undefined' && window.innerWidth < 400 ? 48 : 56;
-
   const isLastMove = isLastMoveTo;
 
   let border = `1px solid ${isWinCell ? 'var(--color-success)' : 'var(--color-border)'}`;
@@ -58,12 +58,14 @@ export const Cell = React.memo(function Cell({
   const showGhost = isAnimatingFrom && animatingPlayer;
   const showArriving = isAnimatingTo && animatingPlayer && !value;
 
+  const pieceSize = CELL_SIZE * 0.55;
+
   return (
     <button
       onClick={onClick}
       style={{
-        width: size,
-        height: size,
+        width: CELL_SIZE,
+        height: CELL_SIZE,
         borderRadius: 'var(--radius-sm)',
         border,
         background,
@@ -78,8 +80,8 @@ export const Cell = React.memo(function Cell({
     >
       {value && !isAnimatingFrom && (
         <div style={{
-          width: size * 0.55,
-          height: size * 0.55,
+          width: pieceSize,
+          height: pieceSize,
           borderRadius: '50%',
           background: value === 'black' ? '#1a1a1a' : '#ffffff',
           border: value === 'white' ? '2px solid #1a1a1a' : '2px solid #444',
@@ -90,8 +92,8 @@ export const Cell = React.memo(function Cell({
       )}
       {showGhost && (
         <div style={{
-          width: size * 0.55,
-          height: size * 0.55,
+          width: pieceSize,
+          height: pieceSize,
           borderRadius: '50%',
           background: animatingPlayer === 'black' ? '#1a1a1a' : '#ffffff',
           border: animatingPlayer === 'white' ? '2px solid #1a1a1a' : '2px solid #444',
@@ -101,8 +103,8 @@ export const Cell = React.memo(function Cell({
       )}
       {showArriving && (
         <div style={{
-          width: size * 0.55,
-          height: size * 0.55,
+          width: pieceSize,
+          height: pieceSize,
           borderRadius: '50%',
           background: animatingPlayer === 'black' ? '#1a1a1a' : '#ffffff',
           border: animatingPlayer === 'white' ? '2px solid #1a1a1a' : '2px solid #444',

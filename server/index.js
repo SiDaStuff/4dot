@@ -148,13 +148,20 @@ app.use('/api/challenge', publicLimiter);
 app.use('/api/guest', publicLimiter);
 app.use('/api/notifications', authLimiter);
 app.use('/api/game-history', authLimiter);
+app.use('/api/game-history', (req, res, next) => { res.set('Cache-Control', 'private, max-age=10'); next(); });
 app.use('/api/opponent-stats', authLimiter);
+app.use('/api/opponent-stats', (req, res, next) => { res.set('Cache-Control', 'private, max-age=30'); next(); });
 app.use('/api/rating-history', authLimiter);
+app.use('/api/rating-history', (req, res, next) => { res.set('Cache-Control', 'private, max-age=30'); next(); });
 app.use('/api/game-review', authLimiter);
+app.use('/api/activity-feed', authLimiter);
+app.use('/api/activity-feed', (req, res, next) => { res.set('Cache-Control', 'private, max-age=10'); next(); });
+app.use('/api/profile', authLimiter);
 
 const publicPaths = ['/api/leaderboard', '/api/active-games'];
 const publicPathPrefixes = ['/api/ban-check/', '/api/challenge/info/', '/api/challenge/accept/', '/api/guest/events', '/api/game/', '/api/profile/public/'];
 
+const lastUserActivityUpdate = new Map();
 app.use((req, res, next) => {
   const isPublicGet = req.method === 'GET' && (publicPaths.includes(req.path) || publicPathPrefixes.some(p => req.path.startsWith(p)));
   const isPublicPost = req.method === 'POST' && publicPathPrefixes.some(p => req.path.startsWith(p));
@@ -168,28 +175,30 @@ app.use((req, res, next) => {
   }
 
   admin.auth().verifyIdToken(idToken)
-    .then(async (decoded) => {
-      const banSnap = await db.ref(`bans/${decoded.uid}`).once('value');
-      if (banSnap.exists()) {
-        const ban = banSnap.val();
-        if (ban.permanent) return res.status(403).json({ error: 'Account permanently banned', banReason: ban.reason || 'Cheating', permanent: true });
-        if (ban.until && Date.now() < ban.until) {
-          const remaining = Math.ceil((ban.until - Date.now()) / 60000);
-          return res.status(403).json({ error: `Account suspended for ${remaining} more minutes`, banReason: ban.reason || 'Suspicious activity', until: ban.until });
-        }
-        if (ban.until && Date.now() >= ban.until) await db.ref(`bans/${decoded.uid}`).remove();
+  .then(async (decoded) => {
+    const banStatus = await getBanStatus(decoded.uid);
+    if (banStatus.banned) {
+      if (banStatus.permanent) return res.status(403).json({ error: 'Account permanently banned', banReason: banStatus.reason || 'Cheating', permanent: true });
+      if (banStatus.until) {
+        const remaining = Math.ceil((banStatus.until - Date.now()) / 60000);
+        return res.status(403).json({ error: `Account suspended for ${remaining} more minutes`, banReason: banStatus.reason || 'Suspicious activity', until: banStatus.until });
       }
-      
-      // Update user activity tracking (lastSeen and online status)
-      await db.ref(`users/${decoded.uid}`).update({ 
-        lastSeen: Date.now(),
-        online: true 
+    }
+
+    const lastUpdate = lastUserActivityUpdate.get(decoded.uid);
+    const now = Date.now();
+    if (!lastUpdate || now - lastUpdate > 30000) {
+      lastUserActivityUpdate.set(decoded.uid, now);
+      db.ref(`users/${decoded.uid}`).update({
+        lastSeen: now,
+        online: true
       }).catch(() => {});
-      
-      req.user = decoded;
-      next();
-    })
-    .catch(() => res.status(401).json({ error: 'Invalid token' }));
+    }
+
+    req.user = decoded;
+    next();
+  })
+  .catch(() => res.status(401).json({ error: 'Invalid token' }));
 });
 
 const BOARD_SIZE = 6;
@@ -547,6 +556,7 @@ async function banUser(uid, permanent, reason) {
 
   await db.ref(`bans/${uid}`).set(banData);
   await db.ref(`users/${uid}`).update({ banned: true, banReason: reason });
+  invalidateBanCache(uid);
   await forfeitActiveGamesForBannedPlayer(uid);
 }
 
@@ -725,6 +735,11 @@ async function finalizeGame(game, gameId, state, clock, move, gameResult) {
     result: { ...gameResult, moves: state.moves || [] },
     finishedAt,
   }));
+
+  finishedGamesCache.ts = 0;
+  if (game.blackPlayer?.uid) activeGameIndex.delete(game.blackPlayer.uid);
+  if (game.whitePlayer?.uid) activeGameIndex.delete(game.whitePlayer.uid);
+  cache.delete('active_games');
 }
 
 function calculateNewRating(state, opponents, tau = 0.6) {
@@ -817,15 +832,98 @@ const clockTimers = new Map();
 const duelCooldowns = new Map();
 
 const cache = new Map();
+const MAX_CACHE_SIZE = 500;
 function cachedGet(key, ttlMs, fetcher) {
   const entry = cache.get(key);
   if (entry && Date.now() - entry.ts < ttlMs) return entry.data;
+  if (cache.size > MAX_CACHE_SIZE) {
+    const oldest = [...cache.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, 100);
+    for (const [k] of oldest) cache.delete(k);
+  }
   const result = fetcher();
   if (result && typeof result.then === 'function') {
     return result.then(data => { cache.set(key, { data, ts: Date.now() }); return data; });
   }
   cache.set(key, { data: result, ts: Date.now() });
   return result;
+}
+
+const banCache = new Map();
+const BAN_CACHE_TTL = 60000;
+const activeGameIndex = new Map();
+const activeGameIndexTs = { value: 0, ttl: 3000 };
+
+async function getBanStatus(uid) {
+  const cached = banCache.get(uid);
+  if (cached && Date.now() - cached.ts < BAN_CACHE_TTL) return cached.data;
+  const snap = await db.ref(`bans/${uid}`).once('value');
+  let result = { banned: false };
+  if (snap.exists()) {
+    const ban = snap.val();
+    if (ban.permanent) result = { banned: true, permanent: true, reason: ban.reason || 'Cheating' };
+    else if (ban.until && Date.now() < ban.until) result = { banned: true, permanent: false, reason: ban.reason || 'Suspicious activity', until: ban.until };
+    else await db.ref(`bans/${uid}`).remove().catch(() => {});
+  }
+  banCache.set(uid, { data: result, ts: Date.now() });
+  return result;
+}
+
+function invalidateBanCache(uid) { banCache.delete(uid); }
+
+async function refreshActiveGameIndex() {
+  const now = Date.now();
+  if (now - activeGameIndexTs.value < activeGameIndexTs.ttl && activeGameIndex.size > 0) return;
+  const snap = await db.ref('activeGames').once('value');
+  activeGameIndex.clear();
+  if (snap.exists()) {
+    snap.forEach(child => {
+      const g = child.val();
+      if (g.status === 'active') {
+        if (g.blackPlayer?.uid) activeGameIndex.set(g.blackPlayer.uid, child.key);
+        if (g.whitePlayer?.uid) activeGameIndex.set(g.whitePlayer.uid, child.key);
+      }
+    });
+  }
+  activeGameIndexTs.value = now;
+}
+
+const finishedGamesCache = { data: null, ts: 0, ttl: 15000, promise: null };
+async function getFinishedGames(limit) {
+  const now = Date.now();
+  if (finishedGamesCache.data && now - finishedGamesCache.ts < finishedGamesCache.ttl) {
+    if (limit) return finishedGamesCache.data.slice(0, limit);
+    return finishedGamesCache.data;
+  }
+  if (finishedGamesCache.promise) return finishedGamesCache.promise.then(d => limit ? d.slice(0, limit) : d);
+
+  finishedGamesCache.promise = (async () => {
+    const gamesById = new Map();
+    const activeSnap = await db.ref('activeGames').once('value');
+    if (activeSnap.exists()) {
+      activeSnap.forEach(child => {
+        const game = normalizeArrays(child.val());
+        if (game.status === 'finished' || game.completed) {
+          gamesById.set(child.key, { id: child.key, game });
+        }
+      });
+    }
+    let completedRef = db.ref('completedGames');
+    if (limit) completedRef = completedRef.limitToLast(limit);
+    const completedSnap = await completedRef.once('value');
+    if (completedSnap.exists()) {
+      completedSnap.forEach(child => {
+        if (!gamesById.has(child.key)) {
+          gamesById.set(child.key, { id: child.key, game: normalizeArrays(child.val()) });
+        }
+      });
+    }
+    const result = Array.from(gamesById.values());
+    finishedGamesCache.data = result;
+    finishedGamesCache.ts = Date.now();
+    finishedGamesCache.promise = null;
+    return result;
+  })();
+  return finishedGamesCache.promise.then(d => limit ? d.slice(0, limit) : d);
 }
 
 app.get('/api/events', (req, res) => {
@@ -887,59 +985,26 @@ async function createGameFromRematch(oldGame, requesterUid) {
     clock: { black: DEFAULT_TIME_MS, white: DEFAULT_TIME_MS },
     lastMoveTimestamp: Date.now(), createdAt: Date.now(), spectators: 0, positionHistory: [],
   };
-  await db.ref(`activeGames/${gameId}`).set(encodeGameForStorage(gameData));
-  startClockTimer(gameId);
-  return { gameId, opponentUid };
+	await createActiveGame(gameData);
+	startClockTimer(gameId);
+	return { gameId, opponentUid };
 }
 
 async function findActiveGameForUser(uid) {
   if (!uid) return null;
-  const snap = await db.ref('activeGames').once('value');
-  if (!snap.exists()) return null;
-  let found = null;
-  snap.forEach(child => {
-    const game = normalizeArrays(child.val());
-    const isPlayer = game?.blackPlayer?.uid === uid || game?.whitePlayer?.uid === uid;
-    if (isPlayer && game.status === 'active') {
-      found = { id: child.key, ...game };
-      return true;
-    }
-    return false;
-  });
-  return found;
+  await refreshActiveGameIndex();
+  const gameId = activeGameIndex.get(uid);
+  if (!gameId) return null;
+  const snap = await db.ref(`activeGames/${gameId}`).once('value');
+  if (!snap.exists()) { activeGameIndex.delete(uid); return null; }
+  const game = decodeGameFromStorage(snap.val());
+  if (game.status !== 'active') { activeGameIndex.delete(uid); return null; }
+  return { id: gameId, ...game };
 }
 
 async function isUserBusy(uid) {
   const activeGame = await findActiveGameForUser(uid);
   return activeGame ? { busy: true, gameId: activeGame.id } : { busy: false };
-}
-
-async function getFinishedGames(limit) {
-  const gamesById = new Map();
-  const activeSnap = await db.ref('activeGames').once('value');
-  if (activeSnap.exists()) {
-    activeSnap.forEach(child => {
-      const game = normalizeArrays(child.val());
-      if (game.status === 'finished' || game.completed) {
-        gamesById.set(child.key, { id: child.key, game });
-      }
-      return false;
-    });
-  }
-
-  let completedRef = db.ref('completedGames');
-  if (limit) completedRef = completedRef.limitToLast(limit);
-  const completedSnap = await completedRef.once('value');
-  if (completedSnap.exists()) {
-    completedSnap.forEach(child => {
-      if (!gamesById.has(child.key)) {
-        gamesById.set(child.key, { id: child.key, game: normalizeArrays(child.val()) });
-      }
-      return false;
-    });
-  }
-
-  return Array.from(gamesById.values());
 }
 
 async function getFinishedGame(gameId) {
@@ -1007,6 +1072,13 @@ function startClockTimer(gameId) {
     } catch (err) { console.error('Clock tick error:', err.message); }
   }, 1000);
   clockTimers.set(gameId, { tick: tickTimer, abandon: null });
+}
+
+async function createActiveGame(gameData) {
+  await db.ref(`activeGames/${gameData.id}`).set(encodeGameForStorage(gameData));
+  if (gameData.blackPlayer?.uid) activeGameIndex.set(gameData.blackPlayer.uid, gameData.id);
+  if (gameData.whitePlayer?.uid) activeGameIndex.set(gameData.whitePlayer.uid, gameData.id);
+  cache.delete('active_games');
 }
 
 app.post('/api/profile/create', async (req, res) => {
@@ -1181,19 +1253,14 @@ app.post('/api/internal-action', async (req, res) => {
 });
 
 app.get('/api/ban-status', async (req, res) => {
-  const snap = await db.ref(`bans/${req.user.uid}`).once('value');
-  if (!snap.exists()) return res.json({ banned: false });
-  const ban = snap.val();
-  if (ban.permanent) return res.json({ banned: true, permanent: true, reason: ban.reason });
-  if (ban.until && Date.now() < ban.until) return res.json({ banned: true, until: ban.until, reason: ban.reason });
-  await db.ref(`bans/${req.user.uid}`).remove();
-  res.json({ banned: false });
+  const status = await getBanStatus(req.user.uid);
+  res.json(status);
 });
 
 app.get('/api/leaderboard', async (req, res) => {
   const cacheKey = 'leaderboard';
   const cached = cache.get(cacheKey);
-  if (cached && Date.now() - cached.ts < 15000) {
+  if (cached && Date.now() - cached.ts < 30000) {
     return res.json(cached.data);
   }
   const pageSize = 20;
@@ -1409,9 +1476,9 @@ async function tryMatchmaking(uid) {
     const initialState = createInitialGameState();
     const [blackData, whiteData] = await Promise.all([rtdbGet(`users/${uid}`), rtdbGet(`users/${opponent.uid}`)]);
     const gameData = { id: gameId, blackPlayer: { uid, username: blackData.username || 'Player', rating: blackData.rating || 1500, ratingDeviation: blackData.ratingDeviation || 350, piecesPlaced: 0 }, whitePlayer: { uid: opponent.uid, username: whiteData.username || 'Player', rating: whiteData.rating || 1500, ratingDeviation: whiteData.ratingDeviation || 350, piecesPlaced: 0 }, board: initialState.board, currentTurn: initialState.currentTurn, phase: initialState.phase, mode: myEntry.mode, moves: [], status: 'active', clock: { black: DEFAULT_TIME_MS, white: DEFAULT_TIME_MS }, lastMoveTimestamp: Date.now(), createdAt: Date.now(), spectators: 0, positionHistory: [] };
-    await db.ref(`activeGames/${gameId}`).set(encodeGameForStorage(gameData));
-    sendSSE(opponent.uid, { type: 'match_found', gameId });
-    sendSSE(uid, { type: 'match_found', gameId });
+	await createActiveGame(gameData);
+	sendSSE(opponent.uid, { type: 'match_found', gameId });
+	sendSSE(uid, { type: 'match_found', gameId });
     startClockTimer(gameId);
   } catch (err) {
     console.error('Matchmaking error:', err.message);
@@ -1451,9 +1518,9 @@ setInterval(async () => {
         const initialState = createInitialGameState();
         const [blackData, whiteData] = await Promise.all([rtdbGet(`users/${a.uid}`), rtdbGet(`users/${b.uid}`)]);
         const gameData = { id: gameId, blackPlayer: { uid: a.uid, username: blackData.username || 'Player', rating: blackData.rating || 1500, ratingDeviation: blackData.ratingDeviation || 350, piecesPlaced: 0 }, whitePlayer: { uid: b.uid, username: whiteData.username || 'Player', rating: whiteData.rating || 1500, ratingDeviation: whiteData.ratingDeviation || 350, piecesPlaced: 0 }, board: initialState.board, currentTurn: initialState.currentTurn, phase: initialState.phase, mode: a.mode, moves: [], status: 'active', clock: { black: DEFAULT_TIME_MS, white: DEFAULT_TIME_MS }, lastMoveTimestamp: Date.now(), createdAt: Date.now(), spectators: 0, positionHistory: [] };
-        await db.ref(`activeGames/${gameId}`).set(encodeGameForStorage(gameData));
-        sendSSE(a.uid, { type: 'match_found', gameId });
-        sendSSE(b.uid, { type: 'match_found', gameId });
+	await createActiveGame(gameData);
+	sendSSE(a.uid, { type: 'match_found', gameId });
+	sendSSE(b.uid, { type: 'match_found', gameId });
         startClockTimer(gameId);
         break;
       }
@@ -1555,8 +1622,8 @@ app.post('/api/game/create-duel', async (req, res) => {
     positionHistory: []
   };
   
-  await db.ref(`activeGames/${gameId}`).set(encodeGameForStorage(gameData));
-  sendSSE(opponentUid, { type: 'duel_accepted', gameId });
+	await createActiveGame(gameData);
+	sendSSE(opponentUid, { type: 'duel_accepted', gameId });
   sendSSE(fromUid, { type: 'duel_accepted', gameId });
   startClockTimer(gameId);
   res.json({ gameId });
@@ -1701,9 +1768,9 @@ app.get('/api/matchmaking/check', async (req, res) => {
   const initialState = createInitialGameState();
   const [blackData, whiteData] = await Promise.all([rtdbGet(`users/${req.user.uid}`), rtdbGet(`users/${opponent.uid}`)]);
   const gameData = { id: gameId, blackPlayer: { uid: req.user.uid, username: blackData.username || 'Player', rating: blackData.rating || 1500, ratingDeviation: blackData.ratingDeviation || 350, piecesPlaced: 0 }, whitePlayer: { uid: opponent.uid, username: opponent.username || 'Player', rating: opponent.rating, ratingDeviation: opponent.ratingDeviation, piecesPlaced: 0 }, board: initialState.board, currentTurn: initialState.currentTurn, phase: initialState.phase, mode: myEntry.mode, moves: [], status: 'active', clock: { black: DEFAULT_TIME_MS, white: DEFAULT_TIME_MS }, lastMoveTimestamp: Date.now(), createdAt: Date.now(), spectators: 0, positionHistory: [] };
-  await db.ref(`activeGames/${gameId}`).set(encodeGameForStorage(gameData));
-  sendSSE(opponent.uid, { type: 'match_found', gameId });
-  sendSSE(req.user.uid, { type: 'match_found', gameId });
+	await createActiveGame(gameData);
+	sendSSE(opponent.uid, { type: 'match_found', gameId });
+	sendSSE(req.user.uid, { type: 'match_found', gameId });
   startClockTimer(gameId);
   res.json({ matched: true, gameId });
 });
@@ -1853,6 +1920,7 @@ app.post('/api/admin/unban', async (req, res) => {
   if (!uid) return res.status(400).json({ error: 'UID required' });
   await db.ref(`bans/${uid}`).remove();
   await db.ref(`users/${uid}`).update({ susScore: 0 });
+  invalidateBanCache(uid);
   await enableFirebaseAccount(uid);
   res.json({ success: true });
 });
@@ -1947,16 +2015,8 @@ app.get('/api/ban-check/:identifier', async (req, res) => {
       return res.json({ banned: false });
     }
   }
-  const snap = await db.ref(`bans/${uid}`).once('value');
-  if (!snap.exists()) return res.json({ banned: false });
-  const ban = snap.val();
-  if (ban.permanent) return res.json({ banned: true, permanent: true, reason: ban.reason || 'Cheating' });
-  if (ban.until && Date.now() < ban.until) {
-    const remaining = Math.ceil((ban.until - Date.now()) / 1000);
-    return res.json({ banned: true, permanent: false, reason: ban.reason || 'Suspicious activity', until: ban.until, remainingSeconds: remaining });
-  }
-  await db.ref(`bans/${uid}`).remove();
-  res.json({ banned: false });
+  const status = await getBanStatus(uid);
+  res.json(status);
 });
 
 async function disableFirebaseAccount(uid) {
@@ -2243,8 +2303,8 @@ app.post('/api/challenge/accept/:code', async (req, res) => {
     clock: { black: timeMs, white: timeMs },
     lastMoveTimestamp: Date.now(), createdAt: Date.now(), spectators: 0, positionHistory: [],
   };
-  await db.ref(`activeGames/${gameId}`).set(encodeGameForStorage(gameData));
-  sendSSE(challenge.fromUid, { type: 'match_found', gameId });
+	await createActiveGame(gameData);
+	sendSSE(challenge.fromUid, { type: 'match_found', gameId });
   startClockTimer(gameId);
   res.json({ gameId, isGuest: toUid.startsWith('guest_'), guestUid: toUid.startsWith('guest_') ? toUid : undefined });
 });
@@ -2663,11 +2723,18 @@ app.post('/api/game-review', async (req, res) => {
   });
 });
 
-setInterval(() => { serverPollForSusAndQueuedReview().catch(err => console.error('Poll error:', err.message)); }, 60 * 1000);
-// Clean up old move history weekly
+setInterval(() => { serverPollForSusAndQueuedReview().catch(err => console.error('Poll error:', err.message)); }, 5 * 60 * 1000);
 setInterval(() => { cleanupOldMoveHistory().catch(err => console.error('Cleanup error:', err.message)); }, 7 * 24 * 60 * 60 * 1000);
-// Update user offline status every minute
-setInterval(() => { updateUserOfflineStatus().catch(err => console.error('Offline status error:', err.message)); }, 60 * 1000);
+setInterval(() => { updateUserOfflineStatus().catch(err => console.error('Offline status error:', err.message)); }, 5 * 60 * 1000);
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of lastUserActivityUpdate) {
+    if (now - v > 300000) lastUserActivityUpdate.delete(k);
+  }
+  for (const [k, v] of banCache) {
+    if (now - v.ts > BAN_CACHE_TTL * 2) banCache.delete(k);
+  }
+}, 60000);
 serverPollForSusAndQueuedReview().catch(() => {});
 cleanupOldMoveHistory().catch(() => {});
 updateUserOfflineStatus().catch(() => {});
@@ -2690,7 +2757,21 @@ setInterval(() => {
     if (game.status === 'finished' && now - (game.lastMoveTimestamp || game.createdAt) > 3600000) botGameStore.delete(id);
     else if (now - game.createdAt > 86400000) botGameStore.delete(id);
   }
-}, 3000);
+}, 5000);
+
+app.use(express.static(path.join(__dirname, '../dist'), {
+  maxAge: '365d',
+  immutable: true,
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+  },
+}));
+
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../dist/index.html'));
+});
 
 const PORT = process.env.PORT || 3001;
 const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
