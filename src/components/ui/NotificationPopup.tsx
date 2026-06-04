@@ -38,11 +38,13 @@ export function NotificationPopup({
     }
   }, [isOpen, onClose]);
 
-  const handleAcceptDuel = async (fromUid: string) => {
+  const handleAcceptDuel = async (fromUid: string, duelId?: string) => {
     if (!user) return;
     setAcceptingDuel(fromUid);
     try {
-      const data = await api.post('/api/game/create-duel', { opponentUid: fromUid });
+      const payload: any = { opponentUid: fromUid };
+      if (duelId) payload.duelId = duelId;
+      const data = await api.post('/api/game/create-duel', payload);
       if (data.gameId) {
         navigate(`/game/${data.gameId}`);
         onClose();
@@ -192,9 +194,9 @@ export function NotificationPopup({
                   </div>
                   {notification.type === 'duel_request' && notification.fromUid && (
                     <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
-                      <button
-                        onClick={() => handleAcceptDuel(notification.fromUid!)}
-                        disabled={acceptingDuel === notification.fromUid}
+                <button
+                  onClick={() => handleAcceptDuel(notification.fromUid!, notification.duelId)}
+                  disabled={acceptingDuel === notification.fromUid}
                         style={{
                           flex: 1,
                           padding: '0.4rem 0.8rem',

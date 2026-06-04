@@ -122,8 +122,8 @@ export function Profile() {
   if (loading) return <div className="page" style={{ textAlign: 'center', paddingTop: '4rem' }}><Spinner size={40} /></div>;
   if (!profile) return <div className="page"><p>Profile not found</p></div>;
 
-  const winRate = profile.gamesPlayed > 0
-    ? ((profile.wins / profile.gamesPlayed) * 100).toFixed(1)
+  const winRate = (profile.gamesPlayed ?? 0) > 0
+    ? (((profile.wins ?? 0) / (profile.gamesPlayed ?? 1)) * 100).toFixed(1)
     : '0.0';
 
   return (
@@ -149,7 +149,7 @@ export function Profile() {
                 <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Rating</div>
               </div>
               <div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--color-dark)' }}>{profile.gamesPlayed}</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--color-dark)' }}>{profile.gamesPlayed ?? 0}</div>
                 <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Games</div>
               </div>
               <div>
@@ -204,11 +204,11 @@ export function Profile() {
           <Card padding="2rem">
             <h3 style={{ color: 'var(--color-dark)', marginBottom: '1rem' }}>Statistics</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              <Row label="Wins" value={profile.wins.toString()} color="var(--color-success)" />
-              <Row label="Losses" value={profile.losses.toString()} color="var(--color-danger)" />
-              <Row label="Draws" value={profile.draws.toString()} color="var(--color-text-muted)" />
-              <Row label="Rating Deviation" value={profile.ratingDeviation.toString()} />
-              <Row label="Volatility" value={profile.volatility.toFixed(3)} />
+        <Row label="Wins" value={(profile.wins ?? 0).toString()} color="var(--color-success)" />
+        <Row label="Losses" value={(profile.losses ?? 0).toString()} color="var(--color-danger)" />
+        <Row label="Draws" value={(profile.draws ?? 0).toString()} color="var(--color-text-muted)" />
+        <Row label="Rating Deviation" value={(profile.ratingDeviation ?? 350).toString()} />
+        <Row label="Volatility" value={(profile.volatility ?? 0.06).toFixed(3)} />
               <Row label="Online Status" value={profile.online ? 'Online' : 'Offline'} />
             </div>
           </Card>

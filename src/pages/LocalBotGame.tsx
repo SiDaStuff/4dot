@@ -11,6 +11,7 @@ import { Spinner } from '../components/ui/Spinner';
 import { playSoundPlace, playSoundMove, playSoundGameEnd, playSoundGameWin, playSoundGameStart } from '../utils/sounds';
 import { useSettings } from '../context/SettingsContext';
 import { awardBotWinAchievement, checkAchievementsAfterGame, recordGameResult } from '../utils/achievements';
+import { api } from '../services/api';
 import { countPiecesOnBoard } from '../utils/boardUtils';
 import { TOTAL_PIECES } from '../types';
 import type { CellOwner, Position } from '../types';

@@ -125,7 +125,7 @@ app.use(compression({
 }));
 app.use(express.json());
 
-const rateLimitDefaults = { standardHeaders: true, legacyHeaders: false, validate: { trustProxy: true } };
+const rateLimitDefaults = { standardHeaders: true, legacyHeaders: false, validate: { xForwardedForHeader: false, trustProxy: false } };
 const publicLimiter = rateLimit({ ...rateLimitDefaults, windowMs: 60 * 1000, max: 120, message: { error: 'Too many requests', retryAfter: 60 } });
 const authLimiter = rateLimit({ ...rateLimitDefaults, windowMs: 60 * 1000, max: 300, message: { error: 'Too many requests', retryAfter: 60 } });
 const moveLimiter = rateLimit({ ...rateLimitDefaults, windowMs: 60 * 1000, max: 600, message: { error: 'Too many requests', retryAfter: 60 } });
@@ -1015,12 +1015,26 @@ app.post('/api/profile/create', async (req, res) => {
     const existingUname = await rtdbGet(`usernames/${finalUsername.toLowerCase()}`);
     if (existingUname && existingUname !== uid) finalUsername = `Player${Date.now().toString().slice(-4)}`;
     await db.ref(`users/${uid}`).set({
-        uid, username: finalUsername, email: email || '',
-        createdAt: Date.now(), rating: 1500, ratingDeviation: 350, volatility: 0.06,
-        gamesPlayed: 0, wins: 0, losses: 0, draws: 0, online: true, lastSeen: Date.now(),
-        lastUsernameChange: 0, susScore: 0, internalActionFlags: 0,
-      });
-      await db.ref(`usernames/${finalUsername.toLowerCase()}`).set(uid);
+      uid, username: finalUsername, email: email || '',
+      createdAt: Date.now(), rating: 1500, ratingDeviation: 350, volatility: 0.06,
+      gamesPlayed: 0, wins: 0, losses: 0, draws: 0, online: true, lastSeen: Date.now(),
+      lastUsernameChange: 0, susScore: 0, internalActionFlags: 0,
+      banned: false, banReason: null,
+    });
+    await db.ref(`usernames/${finalUsername.toLowerCase()}`).set(uid);
+  } else {
+    const updates = {};
+    const defaults = {
+      rating: 1500, ratingDeviation: 350, volatility: 0.06,
+      gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
+      online: true, lastSeen: Date.now(),
+      lastUsernameChange: 0, susScore: 0, internalActionFlags: 0,
+      banned: false, banReason: null,
+    };
+    for (const [key, value] of Object.entries(defaults)) {
+      if (existing[key] === undefined || existing[key] === null) updates[key] = value;
+    }
+    if (Object.keys(updates).length > 0) await db.ref(`users/${uid}`).update(updates);
   }
   res.json({ success: true });
 });
@@ -1302,11 +1316,13 @@ app.post('/api/friends/duel-request', async (req, res) => {
   duelCooldowns.set(cooldownKey, Date.now());
   setTimeout(() => duelCooldowns.delete(cooldownKey), 30000);
 
+  const duelId = `duel_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
   sendSSE(toUid, {
     type: 'duel_request',
     fromUid: fromUid,
     fromUsername: senderData.username || 'Player',
-    message: `${senderData.username || 'Player'} wants to duel you!`
+    message: `${senderData.username || 'Player'} wants to duel you!`,
+    duelId
   });
 
   const notifRef = db.ref(`notifications/${toUid}`).push();
@@ -1317,6 +1333,8 @@ app.post('/api/friends/duel-request', async (req, res) => {
     fromUsername: senderData.username || 'Player',
     createdAt: Date.now(),
     read: false,
+    duelId,
+    consumed: false,
   });
 
   res.json({ success: true });
@@ -1446,23 +1464,49 @@ setInterval(async () => {
 }, 2000);
 
 app.post('/api/game/create-duel', async (req, res) => {
-  const { opponentUid } = req.body;
+  const { opponentUid, duelNotificationId, duelId } = req.body;
   const fromUid = req.user.uid;
-  
+
   if (!opponentUid) return res.status(400).json({ error: 'Opponent UID required' });
   if (opponentUid === fromUid) return res.status(400).json({ error: 'Cannot duel yourself' });
+
+  if (duelNotificationId) {
+    const notifSnap = await db.ref(`notifications/${opponentUid}/${duelNotificationId}`).once('value');
+    if (notifSnap.exists()) {
+      const notif = notifSnap.val();
+      if (notif.type === 'duel_accepted' || notif.consumed) {
+        return res.status(409).json({ error: 'Duel request has already been accepted' });
+      }
+      await db.ref(`notifications/${opponentUid}/${duelNotificationId}`).update({ consumed: true });
+    }
+  }
+
+  if (duelId) {
+    const notifsSnap = await db.ref(`notifications/${opponentUid}`).orderByChild('duelId').equalTo(duelId).once('value');
+    if (notifsSnap.exists()) {
+      let alreadyConsumed = false;
+      const updates = {};
+      notifsSnap.forEach(child => {
+        const n = child.val();
+        if (n.consumed) alreadyConsumed = true;
+        else updates[`${child.key}/consumed`] = true;
+      });
+      if (alreadyConsumed) return res.status(409).json({ error: 'Duel request has already been accepted' });
+      if (Object.keys(updates).length > 0) await db.ref(`notifications/${opponentUid}`).update(updates);
+    }
+  }
 
   const [senderBusy, opponentBusy] = await Promise.all([isUserBusy(fromUid), isUserBusy(opponentUid)]);
   if (senderBusy.busy) return res.status(409).json({ error: 'You are already in a match', gameId: senderBusy.gameId });
   if (opponentBusy.busy) return res.status(409).json({ error: 'That player is already in a match', gameId: opponentBusy.gameId });
-  
+
   // Check if they're friends
   const allRequests = await rtdbGet('friendRequests');
-  const areFriends = allRequests && Object.values(allRequests).some((r) => 
+  const areFriends = allRequests && Object.values(allRequests).some((r) =>
     r.status === 'accepted' && ((r.from === fromUid && r.to === opponentUid) || (r.from === opponentUid && r.to === fromUid))
   );
   if (!areFriends) return res.status(403).json({ error: 'You can only duel friends' });
-  
+
   // Get both users' data
   const [fromData, toData] = await Promise.all([
     rtdbGet(`users/${fromUid}`),
@@ -1597,14 +1641,21 @@ app.post('/api/bot/game/:gameId/resign', async (req, res) => {
 
 function executeBotMoveSync(game) {
   const strength = game.botStrength || 'hard';
+  const timeElapsed = Date.now() - (game.lastMoveTimestamp || Date.now());
+  const newClock = { ...game.clock, black: Math.max(0, game.clock.black - timeElapsed) };
+
+  if (newClock.black <= 0) {
+    const gameResult = { winner: 'white', method: 'timeout', ratingChangeBlack: 0, ratingChangeWhite: 0, blackRating: game.blackPlayer.rating, whiteRating: game.whitePlayer.rating };
+    game.clock = newClock;
+    return { gameOver: true, result: gameResult };
+  }
+
   const state = { board: game.board, currentTurn: game.currentTurn, phase: game.phase, moves: game.moves || [], positionHistory: game.positionHistory || [] };
   const botMove = engineFindBestMove(state, 'black', STRENGTH_DEPTH[strength] || 6);
   if (!botMove) return { gameOver: false };
   const moveResult = applyMove(state, 'black', botMove.from, botMove.to);
   if (moveResult.error) return { gameOver: false };
 
-  const timeElapsed = Date.now() - (game.lastMoveTimestamp || Date.now());
-  const newClock = { ...game.clock, black: Math.max(0, game.clock.black - timeElapsed) };
   game.board = state.board; game.moves = state.moves; game.positionHistory = state.positionHistory; game.currentTurn = state.currentTurn; game.phase = state.phase; game.clock = newClock; game.lastMoveTimestamp = Date.now();
 
   if (moveResult.gameOver) {
@@ -2464,10 +2515,22 @@ updateUserOfflineStatus().catch(() => {});
 setInterval(() => {
   const now = Date.now();
   for (const [id, game] of botGameStore) {
+    if (game.status === 'active') {
+      const elapsed = now - (game.lastMoveTimestamp || game.createdAt);
+      const currentClock = { ...game.clock };
+      currentClock[game.currentTurn] = Math.max(0, currentClock[game.currentTurn] - elapsed);
+      if (currentClock[game.currentTurn] <= 0) {
+        const winner = game.currentTurn === 'black' ? 'white' : 'black';
+        game.status = 'finished';
+        game.result = { winner, method: 'timeout', ratingChangeBlack: 0, ratingChangeWhite: 0, blackRating: game.blackPlayer.rating, whiteRating: game.whitePlayer.rating };
+        game.clock = currentClock;
+        botGameStore.set(id, game);
+      }
+    }
     if (game.status === 'finished' && now - (game.lastMoveTimestamp || game.createdAt) > 3600000) botGameStore.delete(id);
     else if (now - game.createdAt > 86400000) botGameStore.delete(id);
   }
-}, 600000);
+}, 3000);
 
 const PORT = process.env.PORT || 3001;
 const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

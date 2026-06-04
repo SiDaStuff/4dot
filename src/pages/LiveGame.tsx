@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useGame } from '../hooks/useGame';
 import { makeMove, resignGame, offerDraw, acceptDraw, rejectDraw, requestRematch } from '../services/gameService';
+import { api } from '../services/api';
 import { Board } from '../components/game/Board';
 import { Clock } from '../components/game/Clock';
 import { GameInfo } from '../components/game/GameInfo';

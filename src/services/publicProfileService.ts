@@ -4,12 +4,12 @@ export interface PublicProfile {
   uid: string;
   username: string;
   rating: number;
-  ratingDeviation: number;
-  volatility: number;
-  gamesPlayed: number;
-  wins: number;
-  losses: number;
-  draws: number;
+  ratingDeviation?: number;
+  volatility?: number;
+  gamesPlayed?: number;
+  wins?: number;
+  losses?: number;
+  draws?: number;
   online: boolean;
   lastSeen: number;
   banned: boolean;

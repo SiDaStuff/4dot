@@ -135,8 +135,8 @@ export function PublicProfilePage() {
     );
   }
 
-  const winRate = profile.gamesPlayed > 0
-    ? ((profile.wins / profile.gamesPlayed) * 100).toFixed(1)
+  const winRate = (profile.gamesPlayed ?? 0) > 0
+    ? (((profile.wins ?? 0) / (profile.gamesPlayed ?? 1)) * 100).toFixed(1)
     : '0.0';
 
   const isOwnProfile = user?.uid === profile.uid;
@@ -214,7 +214,7 @@ export function PublicProfilePage() {
               </div>
               <div>
                 <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--color-dark)' }}>
-                  {profile.gamesPlayed}
+                  {profile.gamesPlayed ?? 0}
                 </div>
                 <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
                   Games
@@ -283,7 +283,7 @@ export function PublicProfilePage() {
             )}
           </Card>
 
-          {opponentStats && !isOwnProfile && (opponentStats.wins + opponentStats.losses + opponentStats.draws > 0) && (
+          {opponentStats && !isOwnProfile && ((opponentStats.wins ?? 0) + (opponentStats.losses ?? 0) + (opponentStats.draws ?? 0) > 0) && (
             <Card padding="2rem" style={{ marginBottom: '1.5rem' }}>
               <h3 style={{ color: 'var(--color-dark)', marginBottom: '1rem' }}>Your Record vs {profile.username}</h3>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', textAlign: 'center' }}>
@@ -308,19 +308,19 @@ export function PublicProfilePage() {
               Statistics
             </h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              <Row label="Wins" value={profile.wins.toString()} color="var(--color-success)" />
-              <Row
-                label="Losses"
-                value={profile.losses.toString()}
-                color="var(--color-danger)"
-              />
-              <Row
-                label="Draws"
-                value={profile.draws.toString()}
-                color="var(--color-text-muted)"
-              />
-              <Row label="Rating Deviation" value={profile.ratingDeviation.toString()} />
-              <Row label="Volatility" value={profile.volatility.toFixed(3)} />
+        <Row label="Wins" value={(profile.wins ?? 0).toString()} color="var(--color-success)" />
+        <Row
+          label="Losses"
+          value={(profile.losses ?? 0).toString()}
+          color="var(--color-danger)"
+        />
+        <Row
+          label="Draws"
+          value={(profile.draws ?? 0).toString()}
+          color="var(--color-text-muted)"
+        />
+        <Row label="Rating Deviation" value={(profile.ratingDeviation ?? 350).toString()} />
+        <Row label="Volatility" value={(profile.volatility ?? 0.06).toFixed(3)} />
             </div>
           </Card>
         </div>

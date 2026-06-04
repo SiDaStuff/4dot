@@ -19,6 +19,7 @@ export interface NotificationData {
   fromUsername?: string;
   amount?: number;
   gameId?: string;
+  duelId?: string;
 }
 
 type SSEListener = (data: any) => void;
@@ -144,6 +145,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
           createdAt: Date.now(),
           fromUid: data.fromUid,
           fromUsername: data.fromUsername,
+          duelId: data.duelId,
         });
         showToast(`Duel request from ${data.fromUsername}!`, 'info');
       }
