@@ -116,6 +116,10 @@ app.use(cors({
     return callback(new Error(`CORS origin not allowed: ${origin}`));
   },
   credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  preflightContinue: false,
+  optionsSuccessStatus: 204,
 }));
 app.use(compression({
   filter: (req, res) => {
@@ -2758,20 +2762,6 @@ setInterval(() => {
     else if (now - game.createdAt > 86400000) botGameStore.delete(id);
   }
 }, 5000);
-
-app.use(express.static(path.join(__dirname, '../dist'), {
-  maxAge: '365d',
-  immutable: true,
-  setHeaders(res, filePath) {
-    if (filePath.endsWith('.html')) {
-      res.setHeader('Cache-Control', 'no-cache');
-    }
-  },
-}));
-
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../dist/index.html'));
-});
 
 const PORT = process.env.PORT || 3001;
 const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
