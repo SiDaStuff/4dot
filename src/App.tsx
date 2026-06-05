@@ -49,7 +49,7 @@ export default function App() {
                   <Route path="/play" element={<ProtectedRoute><Play /></ProtectedRoute>} />
                   <Route path="/matchmaking/:mode" element={<ProtectedRoute><Matchmaking /></ProtectedRoute>} />
                   <Route path="/game/:gameId" element={<LiveGame />} />
-                  <Route path="/bot-game/:gameId" element={<ProtectedRoute><LocalBotGame /></ProtectedRoute>} />
+                  <Route path="/bot-game" element={<ProtectedRoute><LocalBotGame /></ProtectedRoute>} />
                   <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
                   <Route path="/browse" element={<ProtectedRoute><Browse /></ProtectedRoute>} />
                   <Route path="/player/:uid" element={<PublicProfilePage />} />

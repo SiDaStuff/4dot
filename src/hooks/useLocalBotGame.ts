@@ -1,9 +1,18 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { api } from '../services/api';
+import { useState, useCallback, useRef } from 'react';
 import { getWinLine } from '../utils/boardUtils';
 import { cloneBoard, countPiecesOnBoard, checkForWin } from '../utils/boardUtils';
 import { TOTAL_PIECES } from '../types';
 import type { Game, CellOwner, Position } from '../types';
+import { createBotGameState, applyBotMove, engineFindBestMove, type BotStrength } from '../utils/botEngine';
+
+const BOT_NAMES: Record<string, string> = {
+  easy: '4dot Engine (Easy)',
+  medium: '4dot Engine (Medium)',
+  hard: '4dot Engine (Hard)',
+  stockfish: '4dot Engine MAX',
+};
+
+const DEFAULT_TIME_MS = 3 * 60 * 1000;
 
 function applyPlacementLocal(board: CellOwner[][], player: CellOwner, pos: Position): { board: CellOwner[][]; gameOver: boolean; winner?: CellOwner; error?: string } {
   if (board[pos.row][pos.col] !== null) return { board, gameOver: false, error: 'Cell occupied' };
@@ -27,114 +36,181 @@ function applyMovementLocal(board: CellOwner[][], player: CellOwner, from: Posit
   return { board: newBoard, gameOver: false };
 }
 
-export function useLocalBotGame(gameId: string | undefined) {
+export function useLocalBotGame(strength: BotStrength = 'hard') {
   const [game, setGame] = useState<Game | null>(null);
-  const [loading, setLoading] = useState(true);
   const [moveLoading, setMoveLoading] = useState(false);
-  const pollRef = useRef<number | null>(null);
-  const botPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const gameRef = useRef<Game | null>(null);
+  const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const gameStateRef = useRef<ReturnType<typeof createBotGameState> | null>(null);
 
-  useEffect(() => {
-    if (!gameId) { setGame(null); setLoading(false); return; }
-    setLoading(true);
-
-    const fetchGame = async () => {
-      try {
-        const data = await api.get(`/api/bot/game/${gameId}`);
-        setGame(data);
-        gameRef.current = data;
-        setLoading(false);
-        if (data.status === 'active' && data.currentTurn === 'black') {
-          botPollRef.current = setTimeout(fetchGame, 500);
-        }
-      } catch {
-        setLoading(false);
-      }
+  const startBotGame = useCallback((playerRating: number = 1500, playerUsername: string = 'Player') => {
+    const initialState = createBotGameState();
+    gameStateRef.current = initialState;
+    const gameData: Game = {
+      id: `bot_${Date.now()}`,
+      whitePlayer: { uid: 'local', username: playerUsername, rating: playerRating, ratingDeviation: 350, piecesPlaced: 0 },
+      blackPlayer: { uid: 'bot', username: BOT_NAMES[strength] || '4dot Engine', rating: 1500, ratingDeviation: 350, piecesPlaced: 0 },
+      board: initialState.board,
+      currentTurn: initialState.currentTurn,
+      phase: initialState.phase,
+      mode: 'casual',
+      moves: [],
+      status: 'active',
+      clock: { black: DEFAULT_TIME_MS, white: DEFAULT_TIME_MS },
+      lastMoveTimestamp: Date.now(),
+      createdAt: Date.now(),
+      spectators: 0,
+      positionHistory: [],
     };
+    setGame(gameData);
+    return gameData.id;
+  }, [strength]);
 
-    fetchGame();
-    pollRef.current = window.setInterval(async () => {
-      if (!gameId || gameRef.current?.status === 'finished') return;
-      try {
-        const data = await api.get(`/api/bot/game/${gameId}`);
-        setGame(data);
-        gameRef.current = data;
-      } catch {}
-    }, 3000);
+  const executeBotMove = useCallback((currentState: ReturnType<typeof createBotGameState>, currentGame: Game) => {
+    const botMove = engineFindBestMove(currentState, 'black', strength);
+    if (!botMove) return;
 
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-      if (botPollRef.current) clearTimeout(botPollRef.current);
-    };
-  }, [gameId]);
+    const result = applyBotMove(currentState, 'black', botMove.from, botMove.to);
+    if (result.error) return;
 
-  const makeBotMove = useCallback(async (from: Position | undefined, to: Position) => {
-    if (!gameId || moveLoading) return { error: 'Loading' };
+    const timeElapsed = Date.now() - (currentGame.lastMoveTimestamp || Date.now());
+    const newClock = { ...currentGame.clock, black: Math.max(0, currentGame.clock.black - timeElapsed) };
+
+    if (newClock.black <= 0) {
+      setGame(prev => {
+        if (!prev) return prev;
+        return { ...prev, status: 'finished', result: { winner: 'white', method: 'timeout', ratingChangeBlack: 0, ratingChangeWhite: 0, blackRating: prev.blackPlayer.rating, whiteRating: prev.whitePlayer.rating }, clock: newClock };
+      });
+      return;
+    }
+
+    if (result.gameOver) {
+      const method = result.draw
+        ? (currentState.phase === 'movement' && currentState.moves.length >= 100 ? '100-ply' : 'threefold-repetition')
+        : 'four-in-a-row';
+      setGame(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          board: currentState.board,
+          currentTurn: currentState.currentTurn,
+          phase: currentState.phase,
+          moves: [...currentState.moves],
+          positionHistory: [...currentState.positionHistory],
+          clock: newClock,
+          lastMoveTimestamp: Date.now(),
+          status: 'finished',
+          result: { winner: result.draw ? 'draw' : result.winner, method, ratingChangeBlack: 0, ratingChangeWhite: 0, blackRating: prev.blackPlayer.rating, whiteRating: prev.whitePlayer.rating },
+        };
+      });
+      return;
+    }
 
     setGame(prev => {
-      if (!prev || prev.status !== 'active' || prev.currentTurn !== 'white') return prev;
-
-      const result = from
-        ? applyMovementLocal(prev.board, 'white', from, to)
-        : applyPlacementLocal(prev.board, 'white', to);
-
-      if (result.error) return prev;
-
-      const newPhase = prev.phase === 'placement'
-        && countPiecesOnBoard(result.board, 'black') >= TOTAL_PIECES
-        && countPiecesOnBoard(result.board, 'white') >= TOTAL_PIECES
-        ? 'movement' : prev.phase;
-
-      const nextTurn = 'black';
-      const timeElapsed = Date.now() - (prev.lastMoveTimestamp || Date.now());
-      const newClock = {
-        ...prev.clock,
-        white: Math.max(0, prev.clock.white - timeElapsed),
-      };
-
-      let newStatus: 'active' | 'finished' = prev.status;
-      let newResult: Game['result'] = prev.result;
-      if (result.gameOver && result.winner) {
-        newStatus = 'finished';
-        newResult = { winner: result.winner, method: 'four-in-a-row', ratingChangeBlack: 0, ratingChangeWhite: 0, blackRating: prev.blackPlayer.rating, whiteRating: prev.whitePlayer.rating };
-      }
-
+      if (!prev) return prev;
       return {
         ...prev,
-        board: result.board,
-        currentTurn: result.gameOver ? prev.currentTurn : nextTurn as 'black' | 'white',
-        phase: result.gameOver ? prev.phase : (newPhase as 'placement' | 'movement'),
+        board: currentState.board,
+        currentTurn: currentState.currentTurn,
+        phase: currentState.phase,
+        moves: [...currentState.moves],
+        positionHistory: [...currentState.positionHistory],
         clock: newClock,
         lastMoveTimestamp: Date.now(),
-        moves: [...(prev.moves || []), { player: 'white', from, to, timestamp: Date.now(), moveNumber: (prev.moves?.length || 0) + 1 }],
-        status: newStatus,
-        result: newResult,
+      };
+    });
+
+    if (currentState.currentTurn === 'white') {
+      startWhiteClock();
+    }
+  }, [strength]);
+
+  const startWhiteClock = useCallback(() => {
+    if (botTimerRef.current) clearTimeout(botTimerRef.current);
+  }, []);
+
+  const makePlayerMove = useCallback(async (from: Position | undefined, to: Position) => {
+    if (!gameStateRef.current || moveLoading) return { error: 'Loading' };
+    const state = gameStateRef.current;
+
+    if (state.gameOver || state.currentTurn !== 'white') return { error: 'Not your turn' };
+
+    const result = applyBotMove(state, 'white', from, to);
+    if (result.error) return { error: result.error };
+
+    const timeElapsed = Date.now() - (game?.lastMoveTimestamp || Date.now());
+    const newClock = game ? { ...game.clock, white: Math.max(0, game.clock.white - timeElapsed) } : { black: DEFAULT_TIME_MS, white: DEFAULT_TIME_MS };
+
+    if (newClock.white <= 0) {
+      setGame(prev => {
+        if (!prev) return prev;
+        return { ...prev, status: 'finished', result: { winner: 'black', method: 'timeout', ratingChangeBlack: 0, ratingChangeWhite: 0, blackRating: prev.blackPlayer.rating, whiteRating: prev.whitePlayer.rating }, clock: newClock };
+      });
+      return { gameOver: true, result: { winner: 'black', method: 'timeout' } };
+    }
+
+    if (result.gameOver) {
+      const method = result.draw
+        ? (state.phase === 'movement' && state.moves.length >= 100 ? '100-ply' : 'threefold-repetition')
+        : 'four-in-a-row';
+      setGame(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          board: state.board,
+          currentTurn: state.currentTurn,
+          phase: state.phase,
+          moves: [...state.moves],
+          positionHistory: [...state.positionHistory],
+          clock: newClock,
+          lastMoveTimestamp: Date.now(),
+          status: 'finished',
+          result: { winner: result.draw ? 'draw' : result.winner, method, ratingChangeBlack: 0, ratingChangeWhite: 0, blackRating: prev.blackPlayer.rating, whiteRating: prev.whitePlayer.rating },
+        };
+      });
+      return { gameOver: true, result: { winner: result.draw ? 'draw' : result.winner, method } };
+    }
+
+    setGame(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        board: state.board,
+        currentTurn: state.currentTurn,
+        phase: state.phase,
+        moves: [...state.moves],
+        positionHistory: [...state.positionHistory],
+        clock: newClock,
+        lastMoveTimestamp: Date.now(),
       };
     });
 
     setMoveLoading(true);
-    try {
-      const data = await api.post(`/api/bot/game/${gameId}/move`, { from, to });
-      if (data.game) setGame(data.game);
-      return data;
-    } catch (err: any) {
-      return { error: err.message };
-    } finally {
+    setTimeout(() => {
+      if (gameStateRef.current) {
+        const currentGame = { ...game!, clock: newClock, lastMoveTimestamp: Date.now() };
+        executeBotMove(gameStateRef.current, currentGame);
+      }
       setMoveLoading(false);
-    }
-  }, [gameId, moveLoading]);
+    }, 300);
 
-  const resignBotGame = useCallback(async () => {
-    if (!gameId) return;
-    try {
-      const data = await api.post(`/api/bot/game/${gameId}/resign`);
-      if (data.game) setGame(data.game);
-    } catch {}
-  }, [gameId]);
+    return { gameOver: false };
+  }, [game, moveLoading, executeBotMove]);
+
+  const resignBotGame = useCallback(() => {
+    if (!game) return;
+    setGame(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        status: 'finished',
+        result: { winner: 'black', method: 'resign', ratingChangeBlack: 0, ratingChangeWhite: 0, blackRating: prev.blackPlayer.rating, whiteRating: prev.whitePlayer.rating },
+      };
+    });
+    gameStateRef.current = null;
+  }, [game]);
 
   const winLine = game?.status === 'finished' && game.result && game.result.winner !== 'draw'
     ? getWinLine(game.board, game.result.winner as CellOwner) : null;
 
-  return { game, loading, moveLoading, makeBotMove, resignBotGame, winLine };
+  return { game, loading: false, moveLoading, makePlayerMove, resignBotGame, winLine, startBotGame };
 }

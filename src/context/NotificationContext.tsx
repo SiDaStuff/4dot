@@ -149,9 +149,12 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         });
         showToast(`Duel request from ${data.fromUsername}!`, 'info');
       }
-      if (data.type === 'duel_accepted' && data.gameId) {
-        navigateRef.current(`/game/${data.gameId}`);
-      }
+if (data.type === 'duel_accepted' && data.gameId) {
+navigateRef.current(`/game/${data.gameId}`);
+}
+if (data.type === 'rematch_accepted' && data.gameId) {
+navigateRef.current(`/game/${data.gameId}`);
+}
       if (data.type === 'match_found' && data.gameId) {
         navigateRef.current(`/game/${data.gameId}`);
       }

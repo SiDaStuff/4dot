@@ -142,7 +142,6 @@ app.use('/api/ban-check/', publicLimiter);
 app.use('/api/events', authLimiter);
 app.use('/api/game/', moveLimiter);
 app.use('/api/matchmaking/', authLimiter);
-app.use('/api/bot/', authLimiter);
 app.use('/api/admin/', authLimiter);
 app.use('/api/profile', authLimiter);
 app.use('/api/friends', authLimiter);
@@ -157,7 +156,6 @@ app.use('/api/opponent-stats', authLimiter);
 app.use('/api/opponent-stats', (req, res, next) => { res.set('Cache-Control', 'private, max-age=30'); next(); });
 app.use('/api/rating-history', authLimiter);
 app.use('/api/rating-history', (req, res, next) => { res.set('Cache-Control', 'private, max-age=30'); next(); });
-app.use('/api/game-review', authLimiter);
 app.use('/api/activity-feed', authLimiter);
 app.use('/api/activity-feed', (req, res, next) => { res.set('Cache-Control', 'private, max-age=10'); next(); });
 app.use('/api/profile', authLimiter);
@@ -189,6 +187,37 @@ app.use((req, res, next) => {
       }
     }
 
+  const userSnap = await db.ref(`users/${decoded.uid}`).once('value');
+  if (!userSnap.exists()) {
+    const email = decoded.email || '';
+    let username = decoded.name || email.split('@')[0] || 'Player';
+    const validation = isUsernameValid(username);
+    if (!validation.valid) username = 'Player';
+    const existingUname = await rtdbGet(`usernames/${username.toLowerCase()}`);
+    if (existingUname && existingUname !== decoded.uid) username = `Player${Date.now().toString().slice(-4)}`;
+await db.ref(`users/${decoded.uid}`).set({
+uid: decoded.uid,
+username,
+email,
+createdAt: Date.now(),
+rating: 1500,
+ratingDeviation: 350,
+volatility: 0.06,
+gamesPlayed: 0,
+games: 0,
+wins: 0,
+losses: 0,
+draws: 0,
+online: true,
+lastSeen: Date.now(),
+lastUsernameChange: 0,
+susScore: 0,
+internalActionFlags: 0,
+banned: false,
+banReason: null,
+});
+    await db.ref(`usernames/${username.toLowerCase()}`).set(decoded.uid);
+  } else {
     const lastUpdate = lastUserActivityUpdate.get(decoded.uid);
     const now = Date.now();
     if (!lastUpdate || now - lastUpdate > 30000) {
@@ -198,9 +227,10 @@ app.use((req, res, next) => {
         online: true
       }).catch(() => {});
     }
+  }
 
-    req.user = decoded;
-    next();
+  req.user = decoded;
+  next();
   })
   .catch(() => res.status(401).json({ error: 'Invalid token' }));
 });
@@ -351,207 +381,6 @@ function applyMove(state, player, from, to) {
   return { gameOver: false };
 }
 
-function evaluateBoard(board, player) {
-  const opponent = player === 'black' ? 'white' : 'black';
-  if (checkForWin(board, player)) return 10000;
-  if (checkForWin(board, opponent)) return -10000;
-  let score = 0;
-  const center = (BOARD_SIZE - 1) / 2;
-  for (let r = 0; r < BOARD_SIZE; r++) {
-    for (let c = 0; c < BOARD_SIZE; c++) {
-      if (board[r][c] === player) {
-        score += 10;
-        score += Math.round(center - Math.abs(r - center) - Math.abs(c - center));
-        for (const [dr, dc] of DIRECTIONS) {
-          let count = 1;
-          for (let step = 1; step < WIN_LENGTH; step++) {
-            const nr = r + dr * step, nc = c + dc * step;
-            if (isValidPosition(nr, nc) && board[nr][nc] === player) count++;
-            else break;
-          }
-          if (count >= 2) {
-            const pr = r + dr * -1, pc = c + dc * -1;
-            const openBefore = isValidPosition(pr, pc) && board[pr][pc] === null;
-            const ar = r + dr * count, ac = c + dc * count;
-            const openAfter = isValidPosition(ar, ac) && board[ar][ac] === null;
-            if (count === 3) {
-              if (openBefore && openAfter) score += 200;
-              else if (openBefore || openAfter) score += 80;
-            } else if (count === 2) {
-              if (openBefore && openAfter) score += 30;
-              else if (openBefore || openAfter) score += 10;
-            }
-          }
-        }
-      }
-      if (board[r][c] === opponent) {
-        score -= 10;
-        score -= Math.round(center - Math.abs(r - center) - Math.abs(c - center));
-        for (const [dr, dc] of DIRECTIONS) {
-          let count = 1;
-          for (let step = 1; step < WIN_LENGTH; step++) {
-            const nr = r + dr * step, nc = c + dc * step;
-            if (isValidPosition(nr, nc) && board[nr][nc] === opponent) count++;
-            else break;
-          }
-          if (count >= 2) {
-            const pr = r + dr * -1, pc = c + dc * -1;
-            const openBefore = isValidPosition(pr, pc) && board[pr][pc] === null;
-            const ar = r + dr * count, ac = c + dc * count;
-            const openAfter = isValidPosition(ar, ac) && board[ar][ac] === null;
-            if (count === 3) {
-              if (openBefore && openAfter) score -= 200;
-              else if (openBefore || openAfter) score -= 80;
-            } else if (count === 2) {
-              if (openBefore && openAfter) score -= 30;
-              else if (openBefore || openAfter) score -= 10;
-            }
-          }
-        }
-      }
-    }
-  }
-  return score;
-}
-
-function getBotMoves(state, player) {
-  const moves = [];
-  if (state.phase === 'placement') {
-    for (let r = 0; r < BOARD_SIZE; r++)
-      for (let c = 0; c < BOARD_SIZE; c++)
-        if (state.board[r][c] === null) moves.push({ to: { row: r, col: c } });
-  } else {
-    for (let r = 0; r < BOARD_SIZE; r++)
-      for (let c = 0; c < BOARD_SIZE; c++)
-        if (state.board[r][c] === player)
-          for (let dr = -1; dr <= 1; dr++)
-            for (let dc = -1; dc <= 1; dc++) {
-              if (dr === 0 && dc === 0) continue;
-              const tr = r + dr, tc = c + dc;
-              if (isValidPosition(tr, tc) && state.board[tr][tc] === null)
-                moves.push({ from: { row: r, col: c }, to: { row: tr, col: tc } });
-            }
-  }
-  return moves;
-}
-
-function minimax(state, player, depth, alpha, beta, maximizing) {
-  const opponent = player === 'black' ? 'white' : 'black';
-  const current = maximizing ? player : opponent;
-  if (checkForWin(state.board, player)) return 10000 + depth;
-  if (checkForWin(state.board, opponent)) return -10000 - depth;
-  if (depth === 0) return evaluateBoard(state.board, player);
-
-  const moves = getBotMoves(state, current);
-  if (moves.length === 0) return maximizing ? -9999 : 9999;
-
-  moves.sort((a, b) => {
-    const bA = cloneBoard(state.board);
-    if (a.from) { bA[a.to.row][a.to.col] = current; bA[a.from.row][a.from.col] = null; }
-    else bA[a.to.row][a.to.col] = current;
-    const bB = cloneBoard(state.board);
-    if (b.from) { bB[b.to.row][b.to.col] = current; bB[b.from.row][b.from.col] = null; }
-    else bB[b.to.row][b.to.col] = current;
-    return evaluateBoard(bB, player) - evaluateBoard(bA, player);
-  });
-
-  if (maximizing) {
-    let maxEval = -Infinity;
-    for (const move of moves) {
-      const ns = { board: cloneBoard(state.board), currentTurn: state.currentTurn, phase: state.phase, moves: state.moves, positionHistory: state.positionHistory };
-      if (state.phase === 'placement') applyPlacement(ns, current, move.to);
-      else applyMovement(ns, current, move.from, move.to);
-      ns.currentTurn = current === 'black' ? 'white' : 'black';
-      const eval_ = minimax(ns, player, depth - 1, alpha, beta, false);
-      maxEval = Math.max(maxEval, eval_);
-      alpha = Math.max(alpha, eval_);
-      if (beta <= alpha) break;
-    }
-    return maxEval;
-  } else {
-    let minEval = Infinity;
-    for (const move of moves) {
-      const ns = { board: cloneBoard(state.board), currentTurn: state.currentTurn, phase: state.phase, moves: state.moves, positionHistory: state.positionHistory };
-      if (state.phase === 'placement') applyPlacement(ns, current, move.to);
-      else applyMovement(ns, current, move.from, move.to);
-      ns.currentTurn = current === 'black' ? 'white' : 'black';
-      const eval_ = minimax(ns, player, depth - 1, alpha, beta, true);
-      minEval = Math.min(minEval, eval_);
-      beta = Math.min(beta, eval_);
-      if (beta <= alpha) break;
-    }
-    return minEval;
-  }
-}
-
-function engineFindBestMove(state, player, maxDepth = 10) {
-  const moves = getBotMoves(state, player);
-  if (moves.length === 0) return null;
-  if (moves.length === 1) return moves[0];
-
-  for (const move of moves) {
-    const ns = { board: cloneBoard(state.board), currentTurn: state.currentTurn, phase: state.phase, moves: state.moves, positionHistory: state.positionHistory };
-    if (state.phase === 'placement') applyPlacement(ns, player, move.to);
-    else applyMovement(ns, player, move.from, move.to);
-    if (checkForWin(ns.board, player)) return move;
-  }
-
-  const opponent = player === 'black' ? 'white' : 'black';
-  for (const move of moves) {
-    const ns = { board: cloneBoard(state.board), currentTurn: state.currentTurn, phase: state.phase, moves: state.moves, positionHistory: state.positionHistory };
-    if (state.phase === 'placement') applyPlacement(ns, opponent, move.to);
-    else { if (move.from) { ns.board[move.to.row][move.to.col] = opponent; ns.board[move.from.row][move.from.col] = null; } }
-    if (checkForWin(ns.board, opponent)) return move;
-  }
-
-  let bestMove = moves[0];
-  let bestEval = -Infinity;
-  const depth = Math.min(maxDepth, moves.length <= 5 ? 8 : moves.length <= 10 ? 6 : 4);
-
-  for (const move of moves) {
-    const ns = { board: cloneBoard(state.board), currentTurn: state.currentTurn, phase: state.phase, moves: state.moves, positionHistory: state.positionHistory };
-    if (state.phase === 'placement') applyPlacement(ns, player, move.to);
-    else applyMovement(ns, player, move.from, move.to);
-    ns.currentTurn = opponent;
-    const eval_ = minimax(ns, player, depth - 1, -Infinity, Infinity, false);
-    if (eval_ > bestEval) { bestEval = eval_; bestMove = move; }
-  }
-  return bestMove;
-}
-
-function engineFindBestMoveForPlayer(state, player, maxDepth = 10) {
-  const moves = getBotMoves(state, player);
-  if (moves.length === 0) return null;
-
-  for (const move of moves) {
-    const ns = { board: cloneBoard(state.board), currentTurn: state.currentTurn, phase: state.phase, moves: state.moves, positionHistory: state.positionHistory };
-    if (state.phase === 'placement') applyPlacement(ns, player, move.to);
-    else applyMovement(ns, player, move.from, move.to);
-    if (checkForWin(ns.board, player)) return move;
-  }
-
-  const opponent = player === 'black' ? 'white' : 'black';
-  for (const move of moves) {
-    const ns = { board: cloneBoard(state.board), currentTurn: state.currentTurn, phase: state.phase, moves: state.moves, positionHistory: state.positionHistory };
-    if (state.phase === 'placement') { ns.board[move.to.row][move.to.col] = opponent; }
-    else { if (move.from) { ns.board[move.to.row][move.to.col] = opponent; ns.board[move.from.row][move.from.col] = null; } }
-    if (checkForWin(ns.board, opponent)) return move;
-  }
-
-  let bestMove = moves[0];
-  let bestEval = -Infinity;
-  const depth = Math.min(maxDepth, moves.length <= 5 ? 8 : moves.length <= 10 ? 6 : 4);
-  for (const move of moves) {
-    const ns = { board: cloneBoard(state.board), currentTurn: state.currentTurn, phase: state.phase, moves: state.moves, positionHistory: state.positionHistory };
-    if (state.phase === 'placement') applyPlacement(ns, player, move.to);
-    else applyMovement(ns, player, move.from, move.to);
-    ns.currentTurn = opponent;
-    const eval_ = minimax(ns, player, depth - 1, -Infinity, Infinity, false);
-    if (eval_ > bestEval) { bestEval = eval_; bestMove = move; }
-  }
-  return bestMove;
-}
-
 // Helper function to ban a user and update their status
 async function banUser(uid, permanent, reason) {
   const banData = permanent
@@ -582,81 +411,6 @@ async function forfeitActiveGamesForBannedPlayer(bannedUid) {
     });
     await Promise.all(forfeits);
   } catch {}
-}
-
-async function analyzeGameAndCheckSus(game, state, gameId) {
-  if (game.blackPlayer.uid === 'bot' || game.whitePlayer.uid === 'bot') return;
-  const humanUid = game.blackPlayer.uid !== 'bot' ? game.blackPlayer.uid : game.whitePlayer.uid;
-  const humanColor = game.blackPlayer.uid !== 'bot' ? 'black' : 'white';
-  if (humanUid === 'bot') return;
-
-  const moves = state.moves || [];
-  let matchingMoves = 0;
-  let totalMoves = 0;
-
-  const simState = createInitialGameState();
-
-  for (const move of moves) {
-    if (move.player !== humanColor) {
-      if (simState.phase === 'placement') applyPlacement(simState, move.player, move.to);
-      else applyMovement(simState, move.player, move.from, move.to);
-      if (!simState.currentTurn) simState.currentTurn = move.player === 'black' ? 'white' : 'black';
-      continue;
-    }
-
-    totalMoves++;
-    const engineMove = engineFindBestMoveForPlayer(simState, humanColor, 10);
-
-    if (engineMove) {
-      const playerFrom = move.from ? `${move.from.row},${move.from.col}` : null;
-      const playerTo = `${move.to.row},${move.to.col}`;
-      const engineFrom = engineMove.from ? `${engineMove.from.row},${engineMove.from.col}` : null;
-      const engineTo = `${engineMove.to.row},${engineMove.to.col}`;
-      if (playerTo === engineTo && playerFrom === engineFrom) matchingMoves++;
-    }
-
-    if (simState.phase === 'placement') applyPlacement(simState, humanColor, move.to);
-    else applyMovement(simState, humanColor, move.from, move.to);
-    simState.currentTurn = humanColor === 'black' ? 'white' : 'black';
-  }
-
-  if (totalMoves >= 4) {
-    const matchRate = matchingMoves / totalMoves;
-    let susIncrease = 0;
-    let flagReason = '';
-    if (matchRate >= 0.95) { susIncrease = 40; flagReason = 'Very high engine match rate (>=95%)'; }
-    else if (matchRate >= 0.85) { susIncrease = 25; flagReason = 'High engine match rate (>=85%)'; }
-    else if (matchRate >= 0.75) { susIncrease = 15; flagReason = 'Elevated engine match rate (>=75%)'; }
-    else if (matchRate >= 0.65) { susIncrease = 5; flagReason = 'Moderate engine match rate (>=65%)'; }
-
-    if (susIncrease > 0) {
-      const userSnap = await db.ref(`users/${humanUid}`).once('value');
-      if (userSnap.exists()) {
-        const userData = userSnap.val();
-        const currentSus = userData.susScore || 0;
-        const newSus = currentSus + susIncrease;
-        await db.ref(`users/${humanUid}`).update({ susScore: newSus });
-
-        await db.ref(`flaggedGames/${gameId}`).set({
-          gameId,
-          uid: humanUid,
-          username: userData.username || 'Player',
-          matchRate: Math.round(matchRate * 100),
-          totalMoves,
-          matchingMoves,
-          reason: flagReason,
-          susIncrease,
-          blackPlayer: game.blackPlayer,
-          whitePlayer: game.whitePlayer,
-          moves: state.moves || [],
-          reviewedAt: null,
-          dismissedAt: null,
-          createdAt: Date.now(),
-          status: 'pending',
-        });
-      }
-    }
-  }
 }
 
 async function refundRatingsForBannedPlayer(bannedUid) {
@@ -741,8 +495,8 @@ async function finalizeGame(game, gameId, state, clock, move, gameResult) {
   }));
 
   finishedGamesCache.ts = 0;
-  if (game.blackPlayer?.uid) activeGameIndex.delete(game.blackPlayer.uid);
-  if (game.whitePlayer?.uid) activeGameIndex.delete(game.whitePlayer.uid);
+  if (game.blackPlayer?.uid) removeFromActiveGameIndex(game.blackPlayer.uid);
+  if (game.whitePlayer?.uid) removeFromActiveGameIndex(game.whitePlayer.uid);
   cache.delete('active_games');
 }
 
@@ -831,7 +585,6 @@ function calculateNewRating(state, opponents, tau = 0.6) {
 
 const sseClients = new Map();
 const guestSseClients = new Map();
-const botGameStore = new Map();
 const clockTimers = new Map();
 const duelCooldowns = new Map();
 
@@ -854,42 +607,55 @@ function cachedGet(key, ttlMs, fetcher) {
 
 const banCache = new Map();
 const BAN_CACHE_TTL = 60000;
-const activeGameIndex = new Map();
-const activeGameIndexTs = { value: 0, ttl: 3000 };
+const activeGameIndex = { _map: new Map(), _ts: 0, _ttl: 2000, _refreshing: null };
+
+async function refreshActiveGameIndex() {
+  const now = Date.now();
+  if (now - activeGameIndex._ts < activeGameIndex._ttl && activeGameIndex._map.size > 0) return;
+  if (activeGameIndex._refreshing) return activeGameIndex._refreshing;
+  activeGameIndex._refreshing = (async () => {
+    try {
+      const snap = await db.ref('activeGames').once('value');
+      activeGameIndex._map.clear();
+      if (snap.exists()) {
+        snap.forEach(child => {
+          const g = child.val();
+          if (g.status === 'active') {
+            if (g.blackPlayer?.uid) activeGameIndex._map.set(g.blackPlayer.uid, child.key);
+            if (g.whitePlayer?.uid) activeGameIndex._map.set(g.whitePlayer.uid, child.key);
+          } else {
+            if (g.blackPlayer?.uid) activeGameIndex._map.delete(g.blackPlayer.uid);
+            if (g.whitePlayer?.uid) activeGameIndex._map.delete(g.whitePlayer.uid);
+          }
+        });
+      }
+      activeGameIndex._ts = Date.now();
+    } finally {
+      activeGameIndex._refreshing = null;
+    }
+  })();
+  return activeGameIndex._refreshing;
+}
+
+function removeFromActiveGameIndex(uid) { activeGameIndex._map.delete(uid); }
 
 async function getBanStatus(uid) {
   const cached = banCache.get(uid);
   if (cached && Date.now() - cached.ts < BAN_CACHE_TTL) return cached.data;
-  const snap = await db.ref(`bans/${uid}`).once('value');
+  const banData = await rtdbGet(`bans/${uid}`);
   let result = { banned: false };
-  if (snap.exists()) {
-    const ban = snap.val();
-    if (ban.permanent) result = { banned: true, permanent: true, reason: ban.reason || 'Cheating' };
-    else if (ban.until && Date.now() < ban.until) result = { banned: true, permanent: false, reason: ban.reason || 'Suspicious activity', until: ban.until };
-    else await db.ref(`bans/${uid}`).remove().catch(() => {});
+  if (banData) {
+    if (banData.permanent) {
+      result = { banned: true, permanent: true, reason: banData.reason || 'Permanently banned' };
+    } else if (banData.until && Date.now() < banData.until) {
+      result = { banned: true, permanent: false, reason: banData.reason || 'Temporarily banned', until: banData.until };
+    }
   }
   banCache.set(uid, { data: result, ts: Date.now() });
   return result;
 }
 
 function invalidateBanCache(uid) { banCache.delete(uid); }
-
-async function refreshActiveGameIndex() {
-  const now = Date.now();
-  if (now - activeGameIndexTs.value < activeGameIndexTs.ttl && activeGameIndex.size > 0) return;
-  const snap = await db.ref('activeGames').once('value');
-  activeGameIndex.clear();
-  if (snap.exists()) {
-    snap.forEach(child => {
-      const g = child.val();
-      if (g.status === 'active') {
-        if (g.blackPlayer?.uid) activeGameIndex.set(g.blackPlayer.uid, child.key);
-        if (g.whitePlayer?.uid) activeGameIndex.set(g.whitePlayer.uid, child.key);
-      }
-    });
-  }
-  activeGameIndexTs.value = now;
-}
 
 const finishedGamesCache = { data: null, ts: 0, ttl: 15000, promise: null };
 async function getFinishedGames(limit) {
@@ -997,12 +763,12 @@ async function createGameFromRematch(oldGame, requesterUid) {
 async function findActiveGameForUser(uid) {
   if (!uid) return null;
   await refreshActiveGameIndex();
-  const gameId = activeGameIndex.get(uid);
+  const gameId = activeGameIndex._map.get(uid);
   if (!gameId) return null;
   const snap = await db.ref(`activeGames/${gameId}`).once('value');
-  if (!snap.exists()) { activeGameIndex.delete(uid); return null; }
+  if (!snap.exists()) { removeFromActiveGameIndex(uid); return null; }
   const game = decodeGameFromStorage(snap.val());
-  if (game.status !== 'active') { activeGameIndex.delete(uid); return null; }
+  if (game.status !== 'active') { removeFromActiveGameIndex(uid); return null; }
   return { id: gameId, ...game };
 }
 
@@ -1080,8 +846,8 @@ function startClockTimer(gameId) {
 
 async function createActiveGame(gameData) {
   await db.ref(`activeGames/${gameData.id}`).set(encodeGameForStorage(gameData));
-  if (gameData.blackPlayer?.uid) activeGameIndex.set(gameData.blackPlayer.uid, gameData.id);
-  if (gameData.whitePlayer?.uid) activeGameIndex.set(gameData.whitePlayer.uid, gameData.id);
+  if (gameData.blackPlayer?.uid) activeGameIndex._map.set(gameData.blackPlayer.uid, gameData.id);
+  if (gameData.whitePlayer?.uid) activeGameIndex._map.set(gameData.whitePlayer.uid, gameData.id);
   cache.delete('active_games');
 }
 
@@ -1095,23 +861,23 @@ app.post('/api/profile/create', async (req, res) => {
     if (!validation.valid) finalUsername = 'Player';
     const existingUname = await rtdbGet(`usernames/${finalUsername.toLowerCase()}`);
     if (existingUname && existingUname !== uid) finalUsername = `Player${Date.now().toString().slice(-4)}`;
-    await db.ref(`users/${uid}`).set({
-      uid, username: finalUsername, email: email || '',
-      createdAt: Date.now(), rating: 1500, ratingDeviation: 350, volatility: 0.06,
-      gamesPlayed: 0, wins: 0, losses: 0, draws: 0, online: true, lastSeen: Date.now(),
-      lastUsernameChange: 0, susScore: 0, internalActionFlags: 0,
-      banned: false, banReason: null,
-    });
+await db.ref(`users/${uid}`).set({
+uid, username: finalUsername, email: email || '',
+createdAt: Date.now(), rating: 1500, ratingDeviation: 350, volatility: 0.06,
+gamesPlayed: 0, games: 0, wins: 0, losses: 0, draws: 0, online: true, lastSeen: Date.now(),
+lastUsernameChange: 0, susScore: 0, internalActionFlags: 0,
+banned: false, banReason: null,
+});
     await db.ref(`usernames/${finalUsername.toLowerCase()}`).set(uid);
   } else {
     const updates = {};
-    const defaults = {
-      rating: 1500, ratingDeviation: 350, volatility: 0.06,
-      gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
-      online: true, lastSeen: Date.now(),
-      lastUsernameChange: 0, susScore: 0, internalActionFlags: 0,
-      banned: false, banReason: null,
-    };
+const defaults = {
+rating: 1500, ratingDeviation: 350, volatility: 0.06,
+gamesPlayed: 0, games: 0, wins: 0, losses: 0, draws: 0,
+online: true, lastSeen: Date.now(),
+lastUsernameChange: 0, susScore: 0, internalActionFlags: 0,
+banned: false, banReason: null,
+};
     for (const [key, value] of Object.entries(defaults)) {
       if (existing[key] === undefined || existing[key] === null) updates[key] = value;
     }
@@ -1549,30 +1315,40 @@ app.post('/api/game/create-duel', async (req, res) => {
   if (!opponentUid) return res.status(400).json({ error: 'Opponent UID required' });
   if (opponentUid === fromUid) return res.status(400).json({ error: 'Cannot duel yourself' });
 
-  if (duelNotificationId) {
-    const notifSnap = await db.ref(`notifications/${opponentUid}/${duelNotificationId}`).once('value');
-    if (notifSnap.exists()) {
-      const notif = notifSnap.val();
-      if (notif.type === 'duel_accepted' || notif.consumed) {
-        return res.status(409).json({ error: 'Duel request has already been accepted' });
-      }
-      await db.ref(`notifications/${opponentUid}/${duelNotificationId}`).update({ consumed: true });
-    }
-  }
+if (duelNotificationId) {
+const notifSnap = await db.ref(`notifications/${opponentUid}/${duelNotificationId}`).once('value');
+if (notifSnap.exists()) {
+const notif = notifSnap.val();
+if (notif.type === 'duel_accepted' || notif.consumed) {
+return res.status(409).json({ error: 'Duel request has already been accepted' });
+}
+await db.ref(`notifications/${opponentUid}/${duelNotificationId}`).remove();
+} else {
+return res.status(409).json({ error: 'Duel request has already been accepted' });
+}
+}
 
-  if (duelId) {
-    const notifsSnap = await db.ref(`notifications/${opponentUid}`).orderByChild('duelId').equalTo(duelId).once('value');
-    if (notifsSnap.exists()) {
-      let alreadyConsumed = false;
-      const updates = {};
-      notifsSnap.forEach(child => {
-        const n = child.val();
-        if (n.consumed) alreadyConsumed = true;
-        else updates[`${child.key}/consumed`] = true;
-      });
-      if (alreadyConsumed) return res.status(409).json({ error: 'Duel request has already been accepted' });
-      if (Object.keys(updates).length > 0) await db.ref(`notifications/${opponentUid}`).update(updates);
-    }
+if (duelId) {
+const notifsSnap = await db.ref(`notifications/${opponentUid}`).orderByChild('duelId').equalTo(duelId).once('value');
+if (notifsSnap.exists()) {
+let alreadyConsumed = false;
+const deletes = [];
+notifsSnap.forEach(child => {
+const n = child.val();
+if (n.consumed) alreadyConsumed = true;
+else deletes.push(db.ref(`notifications/${opponentUid}/${child.key}`).remove());
+});
+if (alreadyConsumed) return res.status(409).json({ error: 'Duel request has already been accepted' });
+if (deletes.length > 0) await Promise.all(deletes);
+}
+const senderNotifsSnap = await db.ref(`notifications/${fromUid}`).orderByChild('duelId').equalTo(duelId).once('value');
+if (senderNotifsSnap.exists()) {
+const senderDeletes = [];
+senderNotifsSnap.forEach(child => {
+senderDeletes.push(db.ref(`notifications/${fromUid}/${child.key}`).remove());
+});
+if (senderDeletes.length > 0) await Promise.all(senderDeletes);
+}
   }
 
   const [senderBusy, opponentBusy] = await Promise.all([isUserBusy(fromUid), isUserBusy(opponentUid)]);
@@ -1633,117 +1409,6 @@ app.post('/api/game/create-duel', async (req, res) => {
   res.json({ gameId });
 });
 
-app.post('/api/bot/game', async (req, res) => {
-  const { strength } = req.body;
-  const validStrengths = ['easy', 'medium', 'hard', 'stockfish'];
-  if (!validStrengths.includes(strength)) return res.status(400).json({ error: 'Invalid bot strength' });
-  const data = await rtdbGet(`users/${req.user.uid}`);
-  if (!data) return res.status(404).json({ error: 'User not found' });
-  const gameId = `bot_${Date.now()}_${req.user.uid.slice(0, 6)}`;
-  const botNames = { easy: '4dot Engine (Easy)', medium: '4dot Engine (Medium)', hard: '4dot Engine (Hard)', stockfish: '4dot Engine MAX' };
-  const initialState = createInitialGameState();
-  const gameData = {
-    id: gameId,
-    whitePlayer: { uid: req.user.uid, username: data.username || 'Player', rating: data.rating || 1500, ratingDeviation: data.ratingDeviation || 350, piecesPlaced: 0 },
-    blackPlayer: { uid: 'bot', username: botNames[strength], rating: 1500, ratingDeviation: 350, piecesPlaced: 0 },
-    board: initialState.board, currentTurn: initialState.currentTurn, phase: initialState.phase,
-    mode: 'casual', moves: [], status: 'active',
-    clock: { black: DEFAULT_TIME_MS, white: DEFAULT_TIME_MS },
-    lastMoveTimestamp: Date.now(), createdAt: Date.now(), spectators: 0, positionHistory: [],
-    isBotGame: true, botStrength: strength,
-  };
-  botGameStore.set(gameId, gameData);
-  res.json({ gameId, game: gameData });
-});
-
-app.get('/api/bot/game/:gameId', async (req, res) => {
-  const game = botGameStore.get(req.params.gameId);
-  if (!game) return res.status(404).json({ error: 'Bot game not found' });
-  if (game.whitePlayer.uid !== req.user.uid) return res.status(403).json({ error: 'Not your game' });
-  res.json(game);
-});
-
-app.post('/api/bot/game/:gameId/move', async (req, res) => {
-  const { from, to } = req.body;
-  const game = botGameStore.get(req.params.gameId);
-  if (!game) return res.status(404).json({ error: 'Bot game not found' });
-  if (game.whitePlayer.uid !== req.user.uid) return res.status(403).json({ error: 'Not your game' });
-  if (game.status !== 'active') return res.status(400).json({ error: 'Game is not active' });
-  if (game.currentTurn !== 'white') return res.status(400).json({ error: 'Not your turn' });
-
-  const state = { board: game.board, currentTurn: game.currentTurn, phase: game.phase, moves: game.moves || [], positionHistory: game.positionHistory || [] };
-  const result = applyMove(state, 'white', from, to);
-  if (result.error) return res.status(400).json({ error: result.error });
-
-  const timeElapsed = Date.now() - (game.lastMoveTimestamp || Date.now());
-  const newClock = { ...game.clock, white: Math.max(0, game.clock.white - timeElapsed) };
-
-  if (newClock.white <= 0) {
-    game.status = 'finished';
-    game.result = { winner: 'black', method: 'timeout', ratingChangeBlack: 0, ratingChangeWhite: 0, blackRating: game.blackPlayer.rating, whiteRating: game.whitePlayer.rating };
-    botGameStore.set(req.params.gameId, game);
-    return res.json({ gameOver: true, result: game.result, game });
-  }
-
-  if (result.gameOver) {
-    game.status = 'finished';
-    game.board = state.board; game.moves = state.moves; game.positionHistory = state.positionHistory; game.currentTurn = state.currentTurn; game.phase = state.phase;
-    game.result = { winner: result.draw ? 'draw' : result.winner, method: result.draw ? (game.phase === 'movement' && state.moves.length >= 100 ? '100-ply' : 'threefold-repetition') : 'four-in-a-row', ratingChangeBlack: 0, ratingChangeWhite: 0, blackRating: game.blackPlayer.rating, whiteRating: game.whitePlayer.rating };
-    botGameStore.set(req.params.gameId, game);
-    return res.json({ gameOver: true, result: game.result, game });
-  }
-
-  game.board = state.board; game.moves = state.moves; game.positionHistory = state.positionHistory; game.currentTurn = state.currentTurn; game.phase = state.phase; game.clock = newClock; game.lastMoveTimestamp = Date.now();
-  botGameStore.set(req.params.gameId, game);
-
-  const botResult = executeBotMoveSync(game);
-  if (botResult.gameOver) {
-    game.status = 'finished';
-    game.result = botResult.result;
-    botGameStore.set(req.params.gameId, game);
-    return res.json({ gameOver: true, result: botResult.result, game });
-  }
-
-  botGameStore.set(req.params.gameId, game);
-  res.json({ gameOver: false, game });
-});
-
-app.post('/api/bot/game/:gameId/resign', async (req, res) => {
-  const game = botGameStore.get(req.params.gameId);
-  if (!game) return res.status(404).json({ error: 'Bot game not found' });
-  if (game.whitePlayer.uid !== req.user.uid) return res.status(403).json({ error: 'Not your game' });
-  game.status = 'finished';
-  game.result = { winner: 'black', method: 'resign', ratingChangeBlack: 0, ratingChangeWhite: 0, blackRating: game.blackPlayer.rating, whiteRating: game.whitePlayer.rating };
-  botGameStore.set(req.params.gameId, game);
-  res.json({ success: true, game });
-});
-
-function executeBotMoveSync(game) {
-  const strength = game.botStrength || 'hard';
-  const timeElapsed = Date.now() - (game.lastMoveTimestamp || Date.now());
-  const newClock = { ...game.clock, black: Math.max(0, game.clock.black - timeElapsed) };
-
-  if (newClock.black <= 0) {
-    const gameResult = { winner: 'white', method: 'timeout', ratingChangeBlack: 0, ratingChangeWhite: 0, blackRating: game.blackPlayer.rating, whiteRating: game.whitePlayer.rating };
-    game.clock = newClock;
-    return { gameOver: true, result: gameResult };
-  }
-
-  const state = { board: game.board, currentTurn: game.currentTurn, phase: game.phase, moves: game.moves || [], positionHistory: game.positionHistory || [] };
-  const botMove = engineFindBestMove(state, 'black', STRENGTH_DEPTH[strength] || 6);
-  if (!botMove) return { gameOver: false };
-  const moveResult = applyMove(state, 'black', botMove.from, botMove.to);
-  if (moveResult.error) return { gameOver: false };
-
-  game.board = state.board; game.moves = state.moves; game.positionHistory = state.positionHistory; game.currentTurn = state.currentTurn; game.phase = state.phase; game.clock = newClock; game.lastMoveTimestamp = Date.now();
-
-  if (moveResult.gameOver) {
-    const gameResult = { winner: moveResult.draw ? 'draw' : moveResult.winner, method: moveResult.draw ? (game.phase === 'movement' && state.moves.length >= 100 ? '100-ply' : 'threefold-repetition') : 'four-in-a-row', ratingChangeBlack: 0, ratingChangeWhite: 0, blackRating: game.blackPlayer.rating, whiteRating: game.whitePlayer.rating };
-    return { gameOver: true, result: gameResult };
-  }
-  return { gameOver: false };
-}
-
 app.post('/api/matchmaking/leave', async (req, res) => { await db.ref(`queue/${req.user.uid}`).remove(); res.json({ success: true }); });
 
 app.get('/api/matchmaking/queue-size', async (req, res) => { const snap = await db.ref('queue').once('value'); if (!snap.exists()) return res.json({ size: 0 }); res.json({ size: Object.keys(normalizeArrays(snap.val())).length }); });
@@ -1801,30 +1466,6 @@ app.get('/api/game/:gameId', async (req, res) => {
   }
   res.json(decodeGameFromStorage(snap.val()));
 });
-
-async function executeBotMove(gameId, game) {
-  try {
-    const strength = game.botStrength || 'hard';
-    const state = { board: game.board, currentTurn: game.currentTurn, phase: game.phase, moves: game.moves || [], positionHistory: game.positionHistory || [] };
-    const botMove = engineFindBestMove(state, 'black', STRENGTH_DEPTH[strength] || 6);
-    if (!botMove) return;
-    const moveResult = applyMove(state, 'black', botMove.from, botMove.to);
-    if (moveResult.error) return;
-    const timeElapsed = Date.now() - (game.lastMoveTimestamp || Date.now());
-    const newClock = { ...game.clock, black: Math.max(0, game.clock.black - timeElapsed) };
-    if (moveResult.gameOver) {
-      const gameResult = { winner: moveResult.draw ? 'draw' : moveResult.winner, method: moveResult.draw ? (game.phase === 'movement' && state.moves.length >= 100 ? '100-ply' : 'threefold-repetition') : 'four-in-a-row', ratingChangeBlack: 0, ratingChangeWhite: 0, blackRating: game.blackPlayer.rating, whiteRating: game.whitePlayer.rating };
-      await finalizeGame(game, gameId, state, newClock, state.moves[state.moves.length - 1], gameResult);
-      sendSSE(game.whitePlayer.uid, { type: 'game_over', gameId });
-      return;
-    }
-    await db.ref(`activeGames/${gameId}`).update(encodeGameForStorage({ board: state.board, currentTurn: state.currentTurn, phase: state.phase, moves: state.moves, positionHistory: state.positionHistory, lastMoveTimestamp: Date.now(), clock: newClock }));
-    sendSSE(game.whitePlayer.uid, { type: 'move_made', gameId, clock: newClock });
-    startClockTimer(gameId);
-  } catch {}
-}
-
-const STRENGTH_DEPTH = { easy: 1, medium: 3, hard: 6, stockfish: 10 };
 
 app.post('/api/game/:gameId/move', async (req, res) => {
   const { from, to } = req.body;
@@ -2036,123 +1677,6 @@ async function enableFirebaseAccount(uid) {
     await auth.updateUser(uid, { disabled: false });
   } catch (err) {
     console.error(`Failed to enable account ${uid}:`, err.message);
-  }
-}
-
-async function serverPollForSusAndQueuedReview() {
-  try {
-    const susSnap = await db.ref('users').orderByChild('susScore').startAt(100).limitToFirst(10).once('value');
-    if (susSnap.exists()) {
-      susSnap.forEach(child => {
-        const uid = child.key;
-        const data = child.val();
-        db.ref(`flaggedGames/sus_${uid}_${Date.now()}`).set({
-          gameId: `sus_${uid}_${Date.now()}`,
-          uid,
-          username: data.username || 'Player',
-          matchRate: 100,
-          totalMoves: 0,
-          matchingMoves: 0,
-          reason: `Suspicion score reached ${data.susScore || 0} (threshold: 100)`,
-          susIncrease: 0,
-          blackPlayer: null,
-          whitePlayer: null,
-          moves: [],
-          reviewedAt: null,
-          dismissedAt: null,
-          createdAt: Date.now(),
-          status: 'pending',
-        });
-      });
-    }
-
-    const recentEnd = Date.now();
-    const recentStart = recentEnd - 24 * 60 * 60 * 1000;
-    const finishedGames = await getFinishedGames(50);
-    const recentUnreviewed = finishedGames.filter(({ id, game: g }) => {
-      if (g.blackPlayer?.uid === 'bot' || g.whitePlayer?.uid === 'bot') return false;
-      if (!g.finishedAt || g.finishedAt < recentStart) return false;
-      return true;
-    });
-
-    if (recentUnreviewed.length === 0) return;
-
-    const reviewedSnap = await db.ref('reviewedGames').once('value');
-    const reviewed = reviewedSnap.exists() ? new Set(Object.keys(reviewedSnap.val())) : new Set();
-
-    const toReview = recentUnreviewed.filter(({ id }) => !reviewed.has(id)).slice(0, 3);
-
-    for (const { id, game } of toReview) {
-      const humanUid = game.blackPlayer.uid !== 'bot' ? game.blackPlayer.uid : game.whitePlayer.uid;
-      const humanColor = game.blackPlayer.uid !== 'bot' ? 'black' : 'white';
-      if (humanUid === 'bot') { await db.ref(`reviewedGames/${id}`).set(true); continue; }
-
-      const moves = game.result?.moves || [];
-      if (!moves || moves.length < 4) { await db.ref(`reviewedGames/${id}`).set(true); continue; }
-
-      const simState = createInitialGameState();
-      let matchingMoves = 0;
-      let totalMoves = 0;
-
-      for (const move of moves) {
-        if (move.player !== humanColor) {
-          if (simState.phase === 'placement') applyPlacement(simState, move.player, move.to);
-          else applyMovement(simState, move.player, move.from, move.to);
-          continue;
-        }
-        totalMoves++;
-        const engineMove = engineFindBestMoveForPlayer(simState, humanColor, 6);
-        if (engineMove) {
-          const playerFrom = move.from ? `${move.from.row},${move.from.col}` : null;
-          const playerTo = `${move.to.row},${move.to.col}`;
-          const engineFrom = engineMove.from ? `${engineMove.from.row},${engineMove.from.col}` : null;
-          const engineTo = `${engineMove.to.row},${engineMove.to.col}`;
-          if (playerTo === engineTo && playerFrom === engineFrom) matchingMoves++;
-        }
-        if (simState.phase === 'placement') applyPlacement(simState, humanColor, move.to);
-        else applyMovement(simState, humanColor, move.from, move.to);
-      }
-
-      if (totalMoves >= 4) {
-        const matchRate = matchingMoves / totalMoves;
-        let susIncrease = 0;
-        let flagReason = '';
-        if (matchRate >= 0.95) { susIncrease = 40; flagReason = 'Very high engine match rate (>=95%)'; }
-        else if (matchRate >= 0.85) { susIncrease = 25; flagReason = 'High engine match rate (>=85%)'; }
-        else if (matchRate >= 0.75) { susIncrease = 15; flagReason = 'Elevated engine match rate (>=75%)'; }
-        else if (matchRate >= 0.65) { susIncrease = 5; flagReason = 'Moderate engine match rate (>=65%)'; }
-
-        if (susIncrease > 0) {
-          const userSnap = await db.ref(`users/${humanUid}`).once('value');
-          if (userSnap.exists()) {
-            const currentSus = userSnap.val().susScore || 0;
-            const newSus = currentSus + susIncrease;
-            await db.ref(`users/${humanUid}`).update({ susScore: newSus });
-
-            await db.ref(`flaggedGames/${id}`).set({
-              gameId: id,
-              uid: humanUid,
-              username: userSnap.val().username || 'Player',
-              matchRate: Math.round(matchRate * 100),
-              totalMoves,
-              matchingMoves,
-              reason: flagReason,
-              susIncrease,
-              blackPlayer: game.blackPlayer,
-              whitePlayer: game.whitePlayer,
-              moves: game.result?.moves || [],
-              reviewedAt: null,
-              dismissedAt: null,
-              createdAt: Date.now(),
-              status: 'pending',
-            });
-          }
-        }
-      }
-      await db.ref(`reviewedGames/${id}`).set(true);
-    }
-  } catch (err) {
-    console.error('Server poll error:', err.message);
   }
 }
 
@@ -2424,15 +1948,39 @@ app.post('/api/rematch/:requestId/accept', async (req, res) => {
   if (requesterBusy.busy) return res.status(409).json({ error: 'Opponent is already in a match', gameId: requesterBusy.gameId });
   if (accepterBusy.busy) return res.status(409).json({ error: 'You are already in a match', gameId: accepterBusy.gameId });
 
-  try {
-    const { gameId } = await createGameFromRematch(oldGame, request.fromUid);
-    await requestRef.update({ status: 'accepted', acceptedAt: Date.now(), newGameId: gameId });
-    sendSSE(request.fromUid, { type: 'rematch_accepted', gameId });
-    sendSSE(request.toUid, { type: 'rematch_accepted', gameId });
-    res.json({ gameId });
+try {
+const { gameId } = await createGameFromRematch(oldGame, request.fromUid);
+await requestRef.remove();
+sendSSE(request.fromUid, { type: 'rematch_accepted', gameId });
+sendSSE(request.toUid, { type: 'rematch_accepted', gameId });
+res.json({ gameId });
   } catch (err) {
     res.status(400).json({ error: err.message || 'Failed to create rematch' });
   }
+});
+
+app.post('/api/rematch/:requestId/decline', async (req, res) => {
+if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+const requestRef = db.ref(`rematchRequests/${req.params.requestId}`);
+const requestSnap = await requestRef.once('value');
+if (!requestSnap.exists()) return res.status(404).json({ error: 'Rematch request not found' });
+const request = normalizeArrays(requestSnap.val());
+if (request.status !== 'pending') return res.status(400).json({ error: 'Rematch request is no longer pending' });
+if (request.toUid !== req.user.uid) return res.status(403).json({ error: 'This rematch request is not for you' });
+await requestRef.remove();
+sendSSE(request.fromUid, { type: 'rematch_declined', rematchRequestId: req.params.requestId });
+res.json({ success: true });
+});
+
+app.post('/api/rematch/:requestId/cancel', async (req, res) => {
+if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+const requestRef = db.ref(`rematchRequests/${req.params.requestId}`);
+const requestSnap = await requestRef.once('value');
+if (!requestSnap.exists()) return res.status(404).json({ error: 'Rematch request not found' });
+const request = normalizeArrays(requestSnap.val());
+if (request.fromUid !== req.user.uid) return res.status(403).json({ error: 'Not your rematch request' });
+await requestRef.remove();
+res.json({ success: true });
 });
 
 app.get('/api/game-history', async (req, res) => {
@@ -2641,93 +2189,6 @@ app.post('/api/admin/flagged-games/:flagId/dismiss', async (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/game-review', async (req, res) => {
-  if (!req.user) return res.status(401).json({ error: 'Authentication required' });
-  const { moves, playerColor } = req.body;
-  if (!moves || !Array.isArray(moves) || !playerColor) return res.status(400).json({ error: 'moves and playerColor required' });
-
-  const simState = createInitialGameState();
-  const moveAnalysis = [];
-  let totalCpLoss = 0;
-  let excellentCount = 0;
-  let goodCount = 0;
-  let inaccuracyCount = 0;
-  let mistakeCount = 0;
-  let blunderCount = 0;
-
-  for (let i = 0; i < moves.length; i++) {
-    const move = moves[i];
-    if (move.player !== playerColor) {
-      if (simState.phase === 'placement') applyPlacement(simState, move.player, move.to);
-      else applyMovement(simState, move.player, move.from, move.to);
-      if (!simState.currentTurn) simState.currentTurn = move.player === 'black' ? 'white' : 'black';
-      continue;
-    }
-
-    const beforeEval = evaluateBoard(simState.board, playerColor);
-    const engineMove = engineFindBestMoveForPlayer(simState, playerColor, 10);
-    let bestEval = beforeEval;
-    if (engineMove) {
-      const ns = { board: cloneBoard(simState.board), currentTurn: simState.currentTurn, phase: simState.phase, moves: simState.moves, positionHistory: simState.positionHistory };
-      if (simState.phase === 'placement') applyPlacement(ns, playerColor, engineMove.to);
-      else applyMovement(ns, playerColor, engineMove.from, engineMove.to);
-      bestEval = evaluateBoard(ns.board, playerColor);
-    }
-
-    const afterState = { board: cloneBoard(simState.board), currentTurn: simState.currentTurn, phase: simState.phase, moves: simState.moves, positionHistory: simState.positionHistory };
-    if (simState.phase === 'placement') applyPlacement(afterState, playerColor, move.to);
-    else applyMovement(afterState, playerColor, move.from, move.to);
-    const afterEval = evaluateBoard(afterState.board, playerColor);
-
-    const cpLoss = Math.max(0, bestEval - afterEval);
-    let classification = 'book';
-    if (cpLoss === 0) { classification = 'best'; excellentCount++; }
-    else if (cpLoss <= 15) { classification = 'excellent'; excellentCount++; }
-    else if (cpLoss <= 50) { classification = 'good'; goodCount++; }
-    else if (cpLoss <= 150) { classification = 'inaccuracy'; inaccuracyCount++; }
-    else if (cpLoss <= 400) { classification = 'mistake'; mistakeCount++; }
-    else { classification = 'blunder'; blunderCount++; }
-
-    totalCpLoss += cpLoss;
-
-    moveAnalysis.push({
-      moveNumber: move.moveNumber || i + 1,
-      player: move.player,
-      from: move.from || null,
-      to: move.to,
-      classification,
-      cpLoss,
-      engineMove: engineMove ? { from: engineMove.from || null, to: engineMove.to } : null,
-      beforeEval,
-      bestEval,
-      afterEval,
-    });
-
-    simState.board = afterState.board;
-    simState.currentTurn = playerColor === 'black' ? 'white' : 'black';
-    if (afterState.phase === 'movement') simState.phase = 'movement';
-  }
-
-  const totalPlayerMoves = moveAnalysis.length;
-  let accuracy = 100;
-  if (totalPlayerMoves > 0) {
-    const avgCpLoss = totalCpLoss / totalPlayerMoves;
-    accuracy = Math.max(0, Math.min(100, Math.round(100 - avgCpLoss * 0.15)));
-  }
-
-  res.json({
-    accuracy,
-    moveAnalysis,
-    totalPlayerMoves,
-    excellentCount,
-    goodCount,
-    inaccuracyCount,
-    mistakeCount,
-    blunderCount,
-  });
-});
-
-setInterval(() => { serverPollForSusAndQueuedReview().catch(err => console.error('Poll error:', err.message)); }, 5 * 60 * 1000);
 setInterval(() => { cleanupOldMoveHistory().catch(err => console.error('Cleanup error:', err.message)); }, 7 * 24 * 60 * 60 * 1000);
 setInterval(() => { updateUserOfflineStatus().catch(err => console.error('Offline status error:', err.message)); }, 5 * 60 * 1000);
 setInterval(() => {
@@ -2739,29 +2200,8 @@ setInterval(() => {
     if (now - v.ts > BAN_CACHE_TTL * 2) banCache.delete(k);
   }
 }, 60000);
-serverPollForSusAndQueuedReview().catch(() => {});
 cleanupOldMoveHistory().catch(() => {});
 updateUserOfflineStatus().catch(() => {});
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, game] of botGameStore) {
-    if (game.status === 'active') {
-      const elapsed = now - (game.lastMoveTimestamp || game.createdAt);
-      const currentClock = { ...game.clock };
-      currentClock[game.currentTurn] = Math.max(0, currentClock[game.currentTurn] - elapsed);
-      if (currentClock[game.currentTurn] <= 0) {
-        const winner = game.currentTurn === 'black' ? 'white' : 'black';
-        game.status = 'finished';
-        game.result = { winner, method: 'timeout', ratingChangeBlack: 0, ratingChangeWhite: 0, blackRating: game.blackPlayer.rating, whiteRating: game.whitePlayer.rating };
-        game.clock = currentClock;
-        botGameStore.set(id, game);
-      }
-    }
-    if (game.status === 'finished' && now - (game.lastMoveTimestamp || game.createdAt) > 3600000) botGameStore.delete(id);
-    else if (now - game.createdAt > 86400000) botGameStore.delete(id);
-  }
-}, 5000);
 
 const PORT = process.env.PORT || 3001;
 const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

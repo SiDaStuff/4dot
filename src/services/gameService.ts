@@ -98,13 +98,40 @@ export async function rejectDraw(gameId: string): Promise<{ error?: string }> {
   }
 }
 
-export async function requestRematch(gameId: string): Promise<{ error?: string; gameId?: string }> {
-  try {
-    const data = await api.post(`/api/game/${gameId}/rematch`);
-    return data;
-  } catch (err: any) {
-    return { error: err.message };
-  }
+export async function requestRematch(gameId: string): Promise<{ error?: string; gameId?: string; rematchRequestId?: string }> {
+try {
+const data = await api.post(`/api/game/${gameId}/rematch`);
+return data;
+} catch (err: any) {
+return { error: err.message };
+}
+}
+
+export async function acceptRematch(requestId: string): Promise<{ error?: string; gameId?: string }> {
+try {
+const data = await api.post(`/api/rematch/${requestId}/accept`);
+return data;
+} catch (err: any) {
+return { error: err.message };
+}
+}
+
+export async function declineRematch(requestId: string): Promise<{ error?: string }> {
+try {
+await api.post(`/api/rematch/${requestId}/decline`);
+return {};
+} catch (err: any) {
+return { error: err.message };
+}
+}
+
+export async function cancelRematch(requestId: string): Promise<{ error?: string }> {
+try {
+await api.post(`/api/rematch/${requestId}/cancel`);
+return {};
+} catch (err: any) {
+return { error: err.message };
+}
 }
 
 export async function getGame(gameId: string): Promise<Game | null> {
@@ -118,10 +145,6 @@ export async function getGame(gameId: string): Promise<Game | null> {
 
 export async function getActiveGames(): Promise<any[]> {
   return api.get('/api/active-games');
-}
-
-export async function createBotGame(strength: string): Promise<{ gameId: string }> {
-  return api.post('/api/bot/game', { strength });
 }
 
 export async function getGameHistory(lastKey?: string, limit: number = 20): Promise<{ games: any[]; hasMore: boolean }> {

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useGame } from '../hooks/useGame';
-import { makeMove, resignGame, offerDraw, acceptDraw, rejectDraw, requestRematch } from '../services/gameService';
+import { makeMove, resignGame, offerDraw, acceptDraw, rejectDraw, requestRematch, acceptRematch, declineRematch, cancelRematch } from '../services/gameService';
 import { api } from '../services/api';
 import { Board } from '../components/game/Board';
 import { Clock } from '../components/game/Clock';
@@ -18,6 +18,7 @@ import { playSoundPlace, playSoundMove, playSoundGameEnd, playSoundGameWin, play
 import { useSettings } from '../context/SettingsContext';
 import { showToast } from '../components/ui/Toast';
 import { awardBotWinAchievement, checkAchievementsAfterGame, recordGameResult } from '../utils/achievements';
+import { useSSEListener } from '../context/NotificationContext';
 import type { CellOwner, Position } from '../types';
 
 export function LiveGame() {
@@ -34,16 +35,48 @@ export function LiveGame() {
   const [premove, setPremove] = useState<{ from?: Position; to: Position } | null>(null);
   const [drawOfferPending, setDrawOfferPending] = useState(false);
   const [opponentDrawOffer, setOpponentDrawOffer] = useState(false);
-  const [rematchLoading, setRematchLoading] = useState(false);
-  const prevMoveCountRef = useRef(0);
+const [rematchLoading, setRematchLoading] = useState(false);
+const [rematchRequestId, setRematchRequestId] = useState<string | null>(null);
+const [rematchFromUsername, setRematchFromUsername] = useState<string>('');
+const [sentRematchId, setSentRematchId] = useState<string | null>(null);
+const prevMoveCountRef = useRef(0);
   const prevStatusRef = useRef<string>('');
   const prevTurnRef = useRef<string>('');
   const boardContainerRef = useRef<HTMLDivElement>(null);
   const achievementCheckedRef = useRef(false);
 
-  useEffect(() => { achievementCheckedRef.current = false; }, [gameId]);
+useEffect(() => { achievementCheckedRef.current = false; }, [gameId]);
 
-  const uid = user?.uid || guestUid || '';
+useSSEListener('rematch_request', useCallback((data: any) => {
+if (data.gameId === gameId) {
+setRematchRequestId(data.rematchRequestId);
+setRematchFromUsername(data.fromUsername || 'Opponent');
+}
+}, [gameId]));
+
+useSSEListener('rematch_declined', useCallback((_data: any) => {
+setSentRematchId(null);
+showToast('Rematch declined', 'info');
+}, []));
+
+const handleAcceptRematch = async () => {
+if (!rematchRequestId) return;
+try {
+const result = await acceptRematch(rematchRequestId);
+if (result.error) showToast(result.error, 'error');
+setRematchRequestId(null);
+} catch { setRematchRequestId(null); }
+};
+
+const handleDeclineRematch = async () => {
+if (!rematchRequestId) return;
+try {
+await declineRematch(rematchRequestId);
+} catch {}
+setRematchRequestId(null);
+};
+
+const uid = user?.uid || guestUid || '';
   const myColor: CellOwner | null = game
     ? (game.blackPlayer.uid === uid ? 'black' : game.whitePlayer.uid === uid ? 'white' : null)
     : null;
@@ -210,12 +243,18 @@ export function LiveGame() {
     }
   }, [game, uid, myColor, gameId, selectedPos, moveLoading, guestUid, settings.premoveEnabled, applyOptimisticMove]);
 
-  const handleResign = async () => {
-    try {
-      await resignGame(gameId!, uid, guestUid);
-    } catch {
-    }
-  };
+const handleResign = async () => {
+try {
+await resignGame(gameId!, uid, guestUid);
+} catch {
+}
+};
+
+useEffect(() => {
+return () => {
+if (sentRematchId) cancelRematch(sentRematchId).catch(() => {});
+};
+}, []);
 
   const handleDrawOffer = async () => {
     if (drawOfferPending) return;
@@ -239,13 +278,17 @@ export function LiveGame() {
     setOpponentDrawOffer(false);
   };
 
-  const handleRematch = async () => {
-    setRematchLoading(true);
-    const result = await requestRematch(gameId!);
-    if (result.error) showToast(result.error, 'error');
-    else if (result.gameId) navigate(`/game/${result.gameId}`);
-    setRematchLoading(false);
-  };
+const handleRematch = async () => {
+setRematchLoading(true);
+const result = await requestRematch(gameId!);
+if (result.error) showToast(result.error, 'error');
+else if (result.gameId) navigate(`/game/${result.gameId}`);
+else if (result.rematchRequestId) {
+setSentRematchId(result.rematchRequestId);
+showToast('Rematch request sent', 'info');
+}
+setRematchLoading(false);
+};
 
   if (loading) {
     return (
@@ -334,16 +377,34 @@ export function LiveGame() {
               premoveTo={premove?.to || null}
               isMyTurn={isMyTurn}
             />
-            <GameOverOverlay
-              game={game}
-              myUid={uid}
-              onPlayAgain={() => navigate('/play')}
-              onBackToDashboard={() => navigate('/dashboard')}
-              onRematch={handleRematch}
-              opponentDrawOffer={opponentDrawOffer}
-              onAcceptDraw={handleAcceptDraw}
-              onRejectDraw={handleRejectDraw}
-            />
+<GameOverOverlay
+game={game}
+myUid={uid}
+onPlayAgain={() => navigate('/play')}
+onBackToDashboard={() => navigate('/dashboard')}
+onRematch={handleRematch}
+opponentDrawOffer={opponentDrawOffer}
+onAcceptDraw={handleAcceptDraw}
+onRejectDraw={handleRejectDraw}
+/>
+{rematchRequestId && (
+<div style={{ position: 'absolute', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+<div style={{
+background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(4px)',
+borderRadius: 'var(--radius-lg)', border: '1px solid var(--color-border)',
+boxShadow: 'var(--shadow-xl)', padding: '1.5rem 2rem', textAlign: 'center', maxWidth: 320,
+animation: 'fadeIn 200ms ease-out',
+}}>
+<span className="material-symbols-outlined" style={{ fontSize: '2rem', color: 'var(--color-primary)', display: 'block', marginBottom: '0.5rem' }}>replay</span>
+<h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '0.5rem' }}>Rematch Request</h3>
+<p style={{ color: 'var(--color-text-secondary)', fontSize: '0.85rem', marginBottom: '1rem' }}>{rematchFromUsername} wants a rematch</p>
+<div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+<button onClick={handleAcceptRematch} style={{ padding: '8px 20px', borderRadius: 'var(--radius-md)', background: 'var(--color-success)', color: 'white', border: 'none', fontWeight: 600, cursor: 'pointer' }}>Accept</button>
+<button onClick={handleDeclineRematch} style={{ padding: '8px 20px', borderRadius: 'var(--radius-md)', background: 'var(--color-danger)', color: 'white', border: 'none', fontWeight: 600, cursor: 'pointer' }}>Decline</button>
+</div>
+</div>
+</div>
+)}
           </div>
 
           <div style={{

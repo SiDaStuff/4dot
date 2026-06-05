@@ -1,4 +1,4 @@
-import { useParams, useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useLocalBotGame } from '../hooks/useLocalBotGame';
 import { Board } from '../components/game/Board';
@@ -7,7 +7,6 @@ import { GameInfo } from '../components/game/GameInfo';
 import { MoveHistory } from '../components/game/MoveHistory';
 import { GameOverOverlay } from '../components/game/GameOver';
 import { Button } from '../components/ui/Button';
-import { Spinner } from '../components/ui/Spinner';
 import { playSoundPlace, playSoundMove, playSoundGameEnd, playSoundGameWin, playSoundGameStart } from '../utils/sounds';
 import { useSettings } from '../context/SettingsContext';
 import { awardBotWinAchievement, checkAchievementsAfterGame, recordGameResult } from '../utils/achievements';
@@ -15,22 +14,32 @@ import { api } from '../services/api';
 import { countPiecesOnBoard } from '../utils/boardUtils';
 import { TOTAL_PIECES } from '../types';
 import { downloadPGN } from '../utils/pgn';
-import type { CellOwner, Position } from '../types';
+import type { BotStrength, CellOwner, Position } from '../types';
 import { useState, useCallback, useEffect, useRef } from 'react';
 
 export function LocalBotGame() {
-  const { gameId } = useParams<{ gameId: string }>();
   const { user } = useAuth();
   const navigate = useNavigate();
-  const { game, loading, moveLoading, makeBotMove, resignBotGame, winLine } = useLocalBotGame(gameId);
+  const [searchParams] = useSearchParams();
+  const strength = (searchParams.get('strength') || 'hard') as BotStrength;
+  const { game, moveLoading, makePlayerMove, resignBotGame, winLine, startBotGame } = useLocalBotGame(strength);
   const { settings, updateSetting } = useSettings();
   const [selectedPos, setSelectedPos] = useState<Position | null>(null);
   const [premove, setPremove] = useState<{ from?: Position; to: Position } | null>(null);
   const prevMoveCountRef = useRef(0);
   const prevStatusRef = useRef<string>('');
   const achievementCheckedRef = useRef(false);
+  const gameStartedRef = useRef(false);
 
-  useEffect(() => { achievementCheckedRef.current = false; }, [gameId]);
+  useEffect(() => {
+    if (!gameStartedRef.current && user) {
+      gameStartedRef.current = true;
+      const profile = api.get('/api/profile').catch(() => null);
+      profile.then((p: any) => {
+        startBotGame(p?.rating || 1500, p?.username || user.displayName || user.email?.split('@')[0] || 'Player');
+      });
+    }
+  }, [user, startBotGame]);
 
   const uid = user?.uid || '';
   const myColor: CellOwner = 'white';
@@ -52,37 +61,37 @@ export function LocalBotGame() {
         else playSoundPlace(settings.soundVolume);
       }
     }
-  if (game.status === 'finished' && prevStatusRef.current === 'active' && settings.soundEnabled) {
-    const isWin = game.result?.winner === 'white';
-    if (isWin) {
-      playSoundGameWin(settings.soundVolume);
-      if (game.botStrength) awardBotWinAchievement(game.botStrength);
-    } else if (game.result?.winner === 'draw') playSoundGameEnd(settings.soundVolume);
-    else playSoundGameEnd(settings.soundVolume);
-  }
-  if (game.status === 'finished' && !achievementCheckedRef.current) {
-    achievementCheckedRef.current = true;
-    const isWin = game.result?.winner === 'white';
-    const isDraw = game.result?.winner === 'draw';
-    recordGameResult(isWin ? 'win' : isDraw ? 'draw' : 'loss');
-    api.get('/api/profile').then((profile: any) => {
-      if (profile) {
-        checkAchievementsAfterGame({
-          wins: profile.wins || 0,
-          losses: profile.losses || 0,
-          draws: profile.draws || 0,
-          gamesPlayed: profile.gamesPlayed || 0,
-          rating: profile.rating || 1500,
-        }, { hard: game.botStrength === 'hard', max: game.botStrength === 'stockfish' || game.botStrength === 'max' });
-      }
-    }).catch(() => {});
-  }
+    if (game.status === 'finished' && prevStatusRef.current === 'active' && settings.soundEnabled) {
+      const isWin = game.result?.winner === 'white';
+      if (isWin) {
+        playSoundGameWin(settings.soundVolume);
+        awardBotWinAchievement(strength);
+      } else if (game.result?.winner === 'draw') playSoundGameEnd(settings.soundVolume);
+      else playSoundGameEnd(settings.soundVolume);
+    }
+    if (game.status === 'finished' && !achievementCheckedRef.current) {
+      achievementCheckedRef.current = true;
+      const isWin = game.result?.winner === 'white';
+      const isDraw = game.result?.winner === 'draw';
+      recordGameResult(isWin ? 'win' : isDraw ? 'draw' : 'loss');
+      api.get('/api/profile').then((profile: any) => {
+        if (profile) {
+          checkAchievementsAfterGame({
+            wins: profile.wins || 0,
+            losses: profile.losses || 0,
+            draws: profile.draws || 0,
+            gamesPlayed: profile.gamesPlayed || 0,
+            rating: profile.rating || 1500,
+          }, { hard: strength === 'hard', max: strength === 'stockfish' });
+        }
+      }).catch(() => {});
+    }
     if (game.status === 'active' && prevStatusRef.current !== 'active' && prevStatusRef.current !== '' && settings.soundEnabled) {
       playSoundGameStart(settings.soundVolume);
     }
     prevMoveCountRef.current = moveCount;
     prevStatusRef.current = game.status;
-  }, [game?.moves?.length, game?.status, game?.result, game?.botStrength, settings.soundEnabled, settings.soundVolume]);
+  }, [game?.moves?.length, game?.status, game?.result, strength, settings.soundEnabled, settings.soundVolume]);
 
   const premoveExecutedRef = useRef(false);
 
@@ -90,20 +99,20 @@ export function LocalBotGame() {
     if (!game || !premove || game.currentTurn !== myColor || game.status !== 'active' || premoveExecutedRef.current) return;
     premoveExecutedRef.current = true;
     if (game.phase === 'movement' && premove.from) {
-      makeBotMove(premove.from, premove.to).then(() => {
+      makePlayerMove(premove.from, premove.to).then(() => {
         setPremove(null);
         setSelectedPos(null);
         premoveExecutedRef.current = false;
       });
     } else if (game.phase === 'placement' && !premove.from) {
-      makeBotMove(undefined, premove.to).then(() => {
+      makePlayerMove(undefined, premove.to).then(() => {
         setPremove(null);
         premoveExecutedRef.current = false;
       });
     } else {
       premoveExecutedRef.current = false;
     }
-  }, [game?.currentTurn, premove, myColor, makeBotMove]);
+  }, [game?.currentTurn, premove, myColor, makePlayerMove]);
 
   useEffect(() => {
     if (!settings.keyboardShortcutsEnabled) return;
@@ -144,7 +153,7 @@ export function LocalBotGame() {
     if (!isMyTurn) return;
 
     if (game.phase === 'placement') {
-      const result = await makeBotMove(undefined, pos);
+      const result = await makePlayerMove(undefined, pos);
       if (!result.error) setSelectedPos(null);
     }
 
@@ -154,32 +163,21 @@ export function LocalBotGame() {
         return;
       }
       if (selectedPos) {
-        const result = await makeBotMove(selectedPos, pos);
+        const result = await makePlayerMove(selectedPos, pos);
         if (!result.error) setSelectedPos(null);
         else setSelectedPos(null);
       }
     }
-  }, [game, isMyTurn, moveLoading, makeBotMove, selectedPos, myColor, settings.premoveEnabled]);
+  }, [game, isMyTurn, moveLoading, makePlayerMove, selectedPos, myColor, settings.premoveEnabled]);
 
-  const handleResign = async () => {
-    await resignBotGame();
+  const handleResign = () => {
+    resignBotGame();
   };
-
-  if (loading) {
-    return (
-      <div className="page" style={{ display: 'flex', justifyContent: 'center', paddingTop: '4rem' }}>
-        <Spinner size={40} />
-      </div>
-    );
-  }
 
   if (!game) {
     return (
       <div className="page" style={{ textAlign: 'center', paddingTop: '4rem' }}>
-        <h2 style={{ color: 'var(--color-text-secondary)' }}>Game not found</h2>
-        <Button variant="primary" onClick={() => navigate('/play')} style={{ marginTop: '1rem' }}>
-          Back to Play
-        </Button>
+        <h2 style={{ color: 'var(--color-text-secondary)' }}>Starting game...</h2>
       </div>
     );
   }
@@ -202,24 +200,24 @@ export function LocalBotGame() {
               </div>
               <Clock timeMs={clock.black} isActive={game.status === 'active'} isMyTurn={false} lastMoveTimestamp={game.lastMoveTimestamp} currentTurn={game.currentTurn} myColor={myColor || undefined} playerColor="black" />
             </div>
-      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => updateSetting('boardFlipped', !settings.boardFlipped)}
-          title="Flip board (F)"
-        >
-          <span className="material-symbols-outlined" style={{ fontSize: '1.1rem' }}>flip</span>
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => downloadPGN(game.moves || [], 'Bot', 'You', game.result?.winner === 'draw' ? '1/2-1/2' : game.result?.winner === 'white' ? '1-0' : '0-1', `4dot_bot_${gameId}.pgn`)}
-          title="Export PGN"
-        >
-          <span className="material-symbols-outlined" style={{ fontSize: '1.1rem' }}>download</span>
-        </Button>
-      </div>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => updateSetting('boardFlipped', !settings.boardFlipped)}
+                title="Flip board (F)"
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: '1.1rem' }}>flip</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => downloadPGN(game.moves || [], 'Bot', 'You', game.result?.winner === 'draw' ? '1/2-1/2' : game.result?.winner === 'white' ? '1-0' : '0-1', `4dot_bot_${Date.now()}.pgn`)}
+                title="Export PGN"
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: '1.1rem' }}>download</span>
+              </Button>
+            </div>
             <div>
               <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', textAlign: 'right' }}>
                 White (You)
@@ -245,7 +243,7 @@ export function LocalBotGame() {
             <GameOverOverlay
               game={game}
               myUid={uid}
-              onPlayAgain={() => navigate('/play')}
+              onPlayAgain={() => { gameStartedRef.current = false; achievementCheckedRef.current = false; startBotGame(); }}
               onBackToDashboard={() => navigate('/dashboard')}
             />
           </div>
@@ -263,7 +261,7 @@ export function LocalBotGame() {
             }}>
               {isBotThinking ? 'Bot Thinking...' : isMyTurn ? 'Your Turn' : "Opponent's Turn"}
             </span>
-            {(moveLoading || isBotThinking) && <Spinner size={20} />}
+            {(moveLoading || isBotThinking) && <span style={{ display: 'inline-block', width: 20, height: 20, border: '3px solid var(--color-border)', borderTopColor: 'var(--color-primary)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />}
             {premove && (
               <span style={{
                 padding: '8px 16px', borderRadius: 'var(--radius-md)',

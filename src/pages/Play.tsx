@@ -1,10 +1,8 @@
 import { useNavigate } from 'react-router-dom';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
-import { createBotGame } from '../services/matchmakingService';
 import { showToast } from '../components/ui/Toast';
 import { useState } from 'react';
-import { api } from '../services/api';
 import { CreateChallenge } from './Challenge';
 
 const BOT_OPTIONS: { strength: string; label: string; desc: string; color: string }[] = [
@@ -21,8 +19,7 @@ export function Play() {
   const handleBotPlay = async (strength: string) => {
     setBotLoading(strength);
     try {
-      const { gameId } = await createBotGame(strength);
-      navigate(`/bot-game/${gameId}`);
+      navigate(`/bot-game?strength=${strength}`);
     } catch (err: any) {
       showToast(err.message || 'Failed to start bot game', 'error');
     } finally {

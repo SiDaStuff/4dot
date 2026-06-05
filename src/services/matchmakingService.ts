@@ -16,7 +16,3 @@ export async function getQueueSize(): Promise<number> {
 export async function checkMatch(uid: string, mode: 'casual' | 'rated'): Promise<{ matched: boolean; gameId?: string }> {
   return api.get('/api/matchmaking/check');
 }
-
-export async function createBotGame(strength: string): Promise<{ gameId: string }> {
-  return api.post('/api/bot/game', { strength });
-}

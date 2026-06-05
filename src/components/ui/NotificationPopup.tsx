@@ -212,22 +212,22 @@ export function NotificationPopup({
                       >
                         {acceptingDuel === notification.fromUid ? 'Starting...' : 'Accept Duel'}
                       </button>
-                      <button
-                        onClick={onClose}
-                        style={{
-                          flex: 1,
-                          padding: '0.4rem 0.8rem',
-                          background: 'var(--color-bg-secondary)',
-                          color: 'var(--color-text-secondary)',
-                          border: '1px solid var(--color-border)',
-                          borderRadius: 'var(--radius-sm)',
-                          fontSize: '0.8rem',
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                        }}
-                      >
-                        Dismiss
-                      </button>
+<button
+onClick={(e) => { handleDelete(e, notification.id); }}
+style={{
+flex: 1,
+padding: '0.4rem 0.8rem',
+background: 'var(--color-bg-secondary)',
+color: 'var(--color-text-secondary)',
+border: '1px solid var(--color-border)',
+borderRadius: 'var(--radius-sm)',
+fontSize: '0.8rem',
+fontWeight: 600,
+cursor: 'pointer',
+}}
+>
+Dismiss
+</button>
                     </div>
                   )}
                 </div>

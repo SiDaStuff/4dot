@@ -3,25 +3,28 @@ import { useNavigate } from 'react-router-dom';
 import type { Game, CellOwner } from '../../types';
 import { Confetti } from './Confetti';
 import { useSettings } from '../../context/SettingsContext';
-import { downloadPGN } from '../../utils/pgn';
+import { movesToPGN } from '../../utils/pgn';
 
 interface GameOverProps {
-  game: Game;
-  myUid: string;
-  onPlayAgain?: () => void;
-  onBackToDashboard?: () => void;
-  onRematch?: () => void;
-  onOfferDraw?: () => void;
-  drawOfferPending?: boolean;
-  opponentDrawOffer?: boolean;
-  onAcceptDraw?: () => void;
-  onRejectDraw?: () => void;
+game: Game;
+myUid: string;
+onPlayAgain?: () => void;
+onBackToDashboard?: () => void;
+onRematch?: () => void;
+onOfferDraw?: () => void;
+drawOfferPending?: boolean;
+opponentDrawOffer?: boolean;
+onAcceptDraw?: () => void;
+onRejectDraw?: () => void;
 }
 
 export function GameOverOverlay({ game, myUid, onPlayAgain, onBackToDashboard, onRematch, drawOfferPending, opponentDrawOffer, onAcceptDraw, onRejectDraw }: GameOverProps) {
-  const [dismissed, setDismissed] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const navigate = useNavigate();
+const [dismissed, setDismissed] = useState(false);
+const [copied, setCopied] = useState(false);
+const [shareCopied, setShareCopied] = useState(false);
+const [pgnPopupOpen, setPgnPopupOpen] = useState(false);
+const [pgnCopied, setPgnCopied] = useState(false);
+const navigate = useNavigate();
   const { settings } = useSettings();
   useEffect(() => { setDismissed(false); }, [game.id]);
 
@@ -76,15 +79,31 @@ export function GameOverOverlay({ game, myUid, onPlayAgain, onBackToDashboard, o
 
   const shareUrl = `${window.location.origin}/game/${game.id}`;
 
-  const handleExportPGN = () => {
-    downloadPGN(
-      game.moves || [],
-      game.blackPlayer.username,
-      game.whitePlayer.username,
-      result.winner === 'draw' ? '1/2-1/2' : result.winner === 'black' ? '0-1' : '1-0',
-      `4dot_${game.id}.pgn`
-    );
-  };
+const handleExportPGN = () => {
+setPgnPopupOpen(true);
+setPgnCopied(false);
+};
+
+const handleCopyPGN = async () => {
+const pgn = movesToPGN(
+game.moves || [],
+game.blackPlayer.username,
+game.whitePlayer.username,
+result.winner === 'draw' ? '1/2-1/2' : result.winner === 'black' ? '0-1' : '1-0',
+);
+try {
+await navigator.clipboard.writeText(pgn);
+setPgnCopied(true);
+setTimeout(() => setPgnCopied(false), 2000);
+} catch {}
+};
+
+const pgnContent = movesToPGN(
+game.moves || [],
+game.blackPlayer.username,
+game.whitePlayer.username,
+result?.winner === 'draw' ? '1/2-1/2' : result?.winner === 'black' ? '0-1' : '1-0',
+);
 
   const handleShare = async () => {
     const text = isDraw
@@ -95,11 +114,11 @@ export function GameOverOverlay({ game, myUid, onPlayAgain, onBackToDashboard, o
     if (navigator.share) {
       try { await navigator.share({ title: '4Dot Game', text, url: shareUrl }); return; } catch {}
     }
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {}
+try {
+await navigator.clipboard.writeText(shareUrl);
+setShareCopied(true);
+setTimeout(() => setShareCopied(false), 2000);
+} catch {}
   };
 
   return (
@@ -237,8 +256,8 @@ export function GameOverOverlay({ game, myUid, onPlayAgain, onBackToDashboard, o
             color: 'var(--color-text)', fontWeight: 600, cursor: 'pointer',
             fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: 4,
           }}>
-      <span className="material-symbols-outlined" style={{ fontSize: '1rem' }}>share</span>
-      {copied ? 'Copied!' : 'Share'}
+<span className="material-symbols-outlined" style={{ fontSize: '1rem' }}>share</span>
+{shareCopied ? 'Copied!' : 'Share'}
     </button>
     <button onClick={handleExportPGN} style={{
       padding: '6px 14px', borderRadius: 'var(--radius-md)',
@@ -246,11 +265,98 @@ export function GameOverOverlay({ game, myUid, onPlayAgain, onBackToDashboard, o
       color: 'var(--color-text)', fontWeight: 600, cursor: 'pointer',
       fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: 4,
     }}>
-      <span className="material-symbols-outlined" style={{ fontSize: '1rem' }}>download</span>
-      PGN
-    </button>
-  </div>
-      </div>
+<span className="material-symbols-outlined" style={{ fontSize: '1rem' }}>content_copy</span>
+PGN
+</button>
+</div>
+</div>
+
+{pgnPopupOpen && (
+<div
+onClick={() => setPgnPopupOpen(false)}
+style={{
+position: 'fixed',
+inset: 0,
+zIndex: 100,
+display: 'flex',
+alignItems: 'center',
+justifyContent: 'center',
+background: 'rgba(0,0,0,0.4)',
+}}
+>
+<div
+onClick={(e) => e.stopPropagation()}
+style={{
+background: 'var(--color-white)',
+borderRadius: 'var(--radius-lg)',
+border: '1px solid var(--color-border)',
+boxShadow: 'var(--shadow-xl)',
+padding: '1.5rem',
+maxWidth: 480,
+width: '90%',
+animation: 'fadeIn 200ms ease-out',
+}}
+>
+<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+<h3 style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0 }}>PGN</h3>
+<button
+onClick={() => setPgnPopupOpen(false)}
+style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)', padding: 4, lineHeight: 1 }}
+>
+<span className="material-symbols-outlined" style={{ fontSize: '1.25rem' }}>close</span>
+</button>
+</div>
+<textarea
+readOnly
+value={pgnContent}
+style={{
+width: '100%',
+height: 160,
+resize: 'vertical',
+fontFamily: 'monospace',
+fontSize: '0.8rem',
+padding: '0.75rem',
+borderRadius: 'var(--radius-md)',
+border: '1px solid var(--color-border)',
+background: 'var(--color-bg-secondary)',
+color: 'var(--color-text)',
+outline: 'none',
+}}
+onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+/>
+<div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: '0.75rem' }}>
+<button
+onClick={handleCopyPGN}
+style={{
+padding: '8px 20px',
+borderRadius: 'var(--radius-md)',
+background: pgnCopied ? 'var(--color-success)' : 'var(--color-primary)',
+color: 'white',
+border: 'none',
+fontWeight: 600,
+cursor: 'pointer',
+}}
+>
+{pgnCopied ? 'Copied!' : 'Copy'}
+</button>
+<button
+onClick={() => setPgnPopupOpen(false)}
+style={{
+padding: '8px 20px',
+borderRadius: 'var(--radius-md)',
+background: 'var(--color-bg-secondary)',
+color: 'var(--color-text)',
+border: '1px solid var(--color-border)',
+fontWeight: 600,
+cursor: 'pointer',
+}}
+>
+Close
+</button>
+</div>
+</div>
+</div>
+)}
     </div>
   );
 }
